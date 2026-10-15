@@ -1,0 +1,50 @@
+{
+  "version": "2.5.0",
+  "updatedAt": "2026-10-15T17:27:58.752Z",
+  "stats": {
+    "totalUsers": 1,
+    "telegramUsers": 0,
+    "baleUsers": 0,
+    "rubikaUsers": 0,
+    "totalOrders": 0
+  },
+  "users": [
+    {
+      "id": "simulator_857701256",
+      "rawId": 857701256,
+      "platform": "simulator",
+      "firstName": "MODASR",
+      "lastName": "",
+      "username": "bad_boyx_x666",
+      "firstSeen": "۱۴۰۵/۷/۲۳, ۱۷:۲۷:۵۷",
+      "lastSeen": "۱۴۰۵/۷/۲۳, ۱۷:۲۷:۵۷",
+      "interactionsCount": 1,
+      "walletBalance": 50000,
+      "coins": 1000,
+      "subscriptionTier": "free",
+      "lastAction": "تست ذخیره‌سازی داده",
+      "downloadsCount": 0
+    }
+  ],
+  "wallets": [
+    {
+      "userId": 857701256,
+      "balance": 50000,
+      "coins": 1000,
+      "joinedDate": "۱۴۰۵/۷/۲۳",
+      "subscriptionTier": "free",
+      "subscriptionExpiry": "ندارد"
+    }
+  ],
+  "orders": [],
+  "clashVillages": [],
+  "seenOrders": [],
+  "ownerConfig": {
+    "cardNumber": "6037991823456789",
+    "cardHolder": "علی محمدی (مدیر و مالک ربات)",
+    "bankName": "بانک ملی ایران",
+    "gatewayName": "درگاه آنلاین زرین‌پال / کارت‌به‌کارت مستقیم",
+    "gatewayActive": true,
+    "gatewayMerchantId": "zarinpal_merchant_live_9988"
+  }
+}

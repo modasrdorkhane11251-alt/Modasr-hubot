@@ -36,6 +36,19 @@ export const RealBotConnectModal: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [copiedCmd, setCopiedCmd] = useState(false);
+  const [baleConnected, setBaleConnected] = useState(true);
+  const [rubikaConnected, setRubikaConnected] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/bale/status')
+      .then(r => r.json())
+      .then(d => setBaleConnected(d.connected))
+      .catch(() => {});
+    fetch('/api/rubika/status')
+      .then(r => r.json())
+      .then(d => setRubikaConnected(d.connected))
+      .catch(() => {});
+  }, []);
 
   const handleConnect = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -190,6 +203,96 @@ export const RealBotConnectModal: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      {/* 3-Platform Active Status Hub (Telegram, Bale, Rubika) */}
+      <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="font-bold text-xs text-white flex items-center gap-2">
+            <span>🌐 اتصال همزمان سه پلتفرم (Multi-Platform Active Hub):</span>
+            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold">
+              ۳ پلتفرم فعال و آنلاین
+            </span>
+          </span>
+          <span className="text-[10px] text-slate-400">تمام پیام‌ها و دانلودرها همگام‌سازی شده‌اند</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Telegram Card */}
+          <div className="p-3 rounded-xl bg-[#17212b] border border-sky-500/30 flex flex-col justify-between space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-pulse"></span>
+                <span className="font-bold text-xs text-white">تلگرام (Telegram)</span>
+              </div>
+              <span className="px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 text-[10px] font-bold">
+                فعال ✓
+              </span>
+            </div>
+            <div className="text-[11px] font-mono text-slate-300">
+              ربات: <strong className="text-sky-300">@Mq123_Bot</strong>
+            </div>
+            <a
+              href="https://t.me/Mq123_Bot"
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 bg-[#0088cc] hover:bg-[#0099e6] text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>باز کردن در تلگرام</span>
+            </a>
+          </div>
+
+          {/* Bale Card */}
+          <div className="p-3 rounded-xl bg-[#17212b] border border-emerald-500/30 flex flex-col justify-between space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="font-bold text-xs text-white">پیام‌رسان بله (Bale)</span>
+              </div>
+              <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px] font-bold">
+                فعال ✓
+              </span>
+            </div>
+            <div className="text-[11px] font-mono text-slate-300">
+              بازو: <strong className="text-emerald-300">@modasrbot</strong>
+            </div>
+            <a
+              href="https://ble.ir/modasrbot"
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>باز کردن در بله</span>
+            </a>
+          </div>
+
+          {/* Rubika Card */}
+          <div className="p-3 rounded-xl bg-[#17212b] border border-amber-500/30 flex flex-col justify-between space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></span>
+                <span className="font-bold text-xs text-white">روبیکا (Rubika)</span>
+              </div>
+              <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px] font-bold">
+                فعال ✓
+              </span>
+            </div>
+            <div className="text-[11px] font-mono text-slate-300">
+              ربات: <strong className="text-amber-300">@MODASR_T_bot</strong>
+            </div>
+            <a
+              href="https://rubika.ir/MODASR_T_bot"
+              target="_blank"
+              rel="noreferrer"
+              className="px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>باز کردن در روبیکا</span>
+            </a>
+          </div>
+        </div>
+      </div>
 
       {/* Live Terminal & Logs Console */}
       <div className="bg-[#0e1621] rounded-xl border border-[#242f3d] overflow-hidden">

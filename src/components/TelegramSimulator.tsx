@@ -1,3 +1,4 @@
+import { LinkPreview } from './LinkPreview';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Send,
@@ -64,6 +65,12 @@ export const TelegramSimulator: React.FC<Props> = ({
   const [isListening, setIsListening] = useState(false);
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const getDirectDownloadUrl = (url?: string, filename?: string) => {
+    if (!url) return '';
+    if (url.startsWith('/api/media/stream')) return url;
+    return `/api/media/stream?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename || 'media_download.mp4')}`;
+  };
 
   const toggleSpeechRecognition = () => {
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -240,7 +247,7 @@ export const TelegramSimulator: React.FC<Props> = ({
         {/* Telegram Date Separator */}
         <div className="flex justify-center my-2">
           <span className="bg-[#17212b]/80 backdrop-blur text-slate-300 text-[11px] px-3 py-0.5 rounded-full shadow border border-[#242f3d]/60">
-            امروز • تست زنده سامانه SlowMegaBot
+            امروز • سامانه هوشمند SlowMegaBot
           </span>
         </div>
 
@@ -270,16 +277,19 @@ export const TelegramSimulator: React.FC<Props> = ({
                   </div>
                 )}
 
-                {/* User Link Recognition Badge */}
+                {/* User Link Recognition Badge & Destination Link Preview Card */}
                 {isUser && msg.text && extractUrlFromText(msg.text) && (
-                  <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-[#0088cc]/25 border border-[#0088cc]/40 text-[11px] text-sky-100 flex items-center justify-between gap-1.5 shadow-xs">
-                    <span className="flex items-center gap-1.5 truncate font-mono text-[10px]">
-                      <span>🔗</span>
-                      <span className="truncate">{extractUrlFromText(msg.text)}</span>
-                    </span>
-                    <span className="bg-amber-400 text-slate-950 font-bold px-1.5 py-0.5 rounded text-[9px] shrink-0">
-                      تحلیل خودکار لینک ⚡
-                    </span>
+                  <div className="mb-2.5 space-y-1.5">
+                    <div className="px-2.5 py-1.5 rounded-lg bg-[#0088cc]/25 border border-[#0088cc]/40 text-[11px] text-sky-100 flex items-center justify-between gap-1.5 shadow-xs">
+                      <span className="flex items-center gap-1.5 truncate font-mono text-[10px]">
+                        <span>🔗</span>
+                        <span className="truncate">{extractUrlFromText(msg.text)}</span>
+                      </span>
+                      <span className="bg-amber-400 text-slate-950 font-bold px-1.5 py-0.5 rounded text-[9px] shrink-0">
+                        تحلیل خودکار لینک ⚡
+                      </span>
+                    </div>
+                    <LinkPreview url={extractUrlFromText(msg.text)!} />
                   </div>
                 )}
 
@@ -322,8 +332,8 @@ export const TelegramSimulator: React.FC<Props> = ({
 
                       <div className="flex items-center gap-1.5 shrink-0">
                         <a
-                          href={msg.videoUrl || msg.mediaAttachment?.url}
-                          download
+                          href={getDirectDownloadUrl(msg.videoUrl || msg.mediaAttachment?.url, `video_${msg.mediaAttachment?.shortcode || msg.mediaAttachment?.id || 'post'}.mp4`)}
+                          download={`video_${msg.mediaAttachment?.shortcode || msg.mediaAttachment?.id || 'post'}.mp4`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={() => {
@@ -377,8 +387,8 @@ export const TelegramSimulator: React.FC<Props> = ({
                       {/* Direct Audio Download */}
                       {(msg.audioUrl || msg.mediaAttachment?.url) && (
                         <a
-                          href={msg.audioUrl || msg.mediaAttachment?.url}
-                          download
+                          href={getDirectDownloadUrl(msg.audioUrl || msg.mediaAttachment?.url, `audio_${msg.mediaAttachment?.shortcode || 'audio'}.mp3`)}
+                          download={`audio_${msg.mediaAttachment?.shortcode || 'audio'}.mp3`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={() => {
@@ -428,8 +438,8 @@ export const TelegramSimulator: React.FC<Props> = ({
 
                       {(msg.mediaAttachment?.profileDetails?.avatarUrl || msg.mediaAttachment?.previewUrl || msg.photoUrl) && (
                         <a
-                          href={msg.mediaAttachment?.profileDetails?.avatarUrl || msg.mediaAttachment?.previewUrl || msg.photoUrl}
-                          download
+                          href={getDirectDownloadUrl(msg.mediaAttachment?.profileDetails?.avatarUrl || msg.mediaAttachment?.previewUrl || msg.photoUrl, `avatar_${msg.mediaAttachment?.profileDetails?.username || 'profile'}.jpg`)}
+                          download={`avatar_${msg.mediaAttachment?.profileDetails?.username || 'profile'}.jpg`}
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={() => {

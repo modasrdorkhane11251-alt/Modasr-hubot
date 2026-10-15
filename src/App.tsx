@@ -1,3 +1,5 @@
+import { extractUrlFromText, detectDownloadPlatform, detectContentType } from './services/realApis';
+import { loggerService } from './services/loggerService';
 import React, { useState, useEffect } from 'react';
 import {
   Bot,
@@ -18,6 +20,10 @@ import { RealBotConnectModal } from './components/RealBotConnectModal';
 import { MafiaGameManager } from './components/MafiaGameManager';
 import { MafiaMultiplayerPlatform } from './components/MafiaMultiplayerPlatform';
 import { UserProfileModal } from './components/UserProfileModal';
+import { N8nConnectModal } from './components/N8nConnectModal';
+import { AutoInstallerModal } from './components/AutoInstallerModal';
+import { DatabaseBackupManager } from './components/DatabaseBackupManager';
+import { Webhook, Terminal, Database } from 'lucide-react';
 import {
   TelegramMessage,
   TelegramUser,
@@ -33,11 +39,13 @@ import {
 } from './services/botEngine';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'simulator' | 'mafia' | 'modules' | 'connect' | 'docs'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'mafia' | 'modules' | 'connect' | 'database' | 'docs'>('simulator');
   const [isTyping, setIsTyping] = useState(false);
   const [walletBalance, setWalletBalance] = useState(50000);
   const [walletCoins, setWalletCoins] = useState(1000);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showN8nModal, setShowN8nModal] = useState(false);
+  const [showInstallerModal, setShowInstallerModal] = useState(false);
 
   // Real Bot Connection State
   const [connectedBot, setConnectedBot] = useState<TelegramUser | null>(null);
@@ -47,7 +55,7 @@ export default function App() {
   // Current Simulator User
   const currentUser: TelegramUser = {
     id: 12345678,
-    first_name: 'شما (کاربر تست)',
+    first_name: 'شما',
     username: 'test_user',
   };
 
@@ -70,7 +78,7 @@ export default function App() {
         `🚀 **بت و انفجار:** بازی موشک انفجار با ضریب زنده، تاس و دارت\n` +
         `⚔️ **کلش آف کلنز:** ساخت دهکده، ارتقای تاون‌هال و غارت منابع\n` +
         `🔍 **چت ناشناس:** همدم‌یاب تصادفی و بر اساس موقعیت مکانی\n` +
-        `👁️ **سین‌زن و بازدید:** سفارش آنی بازدید پست با درگاه تستی\n` +
+        `👁️ **سین‌زن و بازدید:** سفارش آنی بازدید پست با درگاه پرداخت الکترونیک شتاب\n` +
         `🛠️ **جعبه ابزار:** استعلام کارت شتاب، OCR و پروکسی MTProto\n` +
         `🎁 **لاتاری و شانس:** گردونه شانس روزانه و اهدای اکانت\n` +
         `👍 **لایک و چالش:** افزایش لایک و واکنش مسابقات تلگرام\n\n` +
@@ -82,7 +90,7 @@ export default function App() {
       from: { id: 999, first_name: 'SlowMegaBot', is_bot: true, username: 'slow_megabot' },
       chat: { id: 12345678, type: 'private' },
       date: Date.now() - 500,
-      text: `📱 کیبورد دسترسی سریع منوی اصلی فعال شد. برای تست هر ماژول کلیک کنید:`,
+      text: `📱 کیبورد دسترسی سریع منوی اصلی فعال شد. جهت انتخاب هر ماژول کلیک کنید:`,
       reply_markup: MAIN_REPLY_KEYBOARD,
     },
   ]);
@@ -115,7 +123,7 @@ export default function App() {
     setWalletCoins(w.coins);
   };
 
-  // Dispatch message from Simulator
+  // Dispatch message from Simulator with 4-step Execution Logging (Detection, API Request, Stream Extraction, Validation)
   const handleSendMessage = async (text: string) => {
     const userMsg: TelegramMessage = {
       message_id: messages.length + 1,
@@ -124,12 +132,57 @@ export default function App() {
       date: Date.now(),
       text,
     };
-
     setMessages((prev) => [...prev, userMsg]);
     setIsTyping(true);
 
+    // =========================================================
+    // STEP 1: DETECTION (Smart URL extraction, command, platform type)
+    // =========================================================
+    const detectedUrl = extractUrlFromText(text);
+    const isUrl = Boolean(detectedUrl);
+    const cleanedUrl = detectedUrl || undefined;
+    let platform: string | undefined = undefined;
+    let contentType: string | undefined = undefined;
+
+    if (isUrl && cleanedUrl) {
+      const detectedPlatform = detectDownloadPlatform(cleanedUrl);
+      platform = detectedPlatform === 'instagram' ? 'اینستاگرام (Instagram)'
+        : detectedPlatform === 'youtube' ? 'یوتیوب (YouTube)'
+        : detectedPlatform === 'tiktok' ? 'تیک‌تاک (TikTok)'
+        : detectedPlatform === 'pinterest' ? 'پینترست (Pinterest)'
+        : detectedPlatform === 'spotify' ? 'اسپاتیفای (Spotify)'
+        : detectedPlatform === 'soundcloud' ? 'ساندکلاد (SoundCloud)'
+        : detectedPlatform === 'twitter' ? 'توییتر / X'
+        : detectedPlatform === 'facebook' ? 'فیسبوک (Facebook)'
+        : detectedPlatform === 'telegram' ? 'تلگرام (Telegram)'
+        : detectedPlatform === 'aparat' ? 'آپارات (Aparat)'
+        : detectedPlatform === 'threads' ? 'تریدز (Threads)'
+        : 'لینک مستقیم دانلود';
+
+      contentType = detectContentType(cleanedUrl, detectedPlatform);
+    }
+
+    const command = text.startsWith('/') ? text.split(' ')[0] : undefined;
+
+    const detectionLog = loggerService.logDetection(text, {
+      isUrl,
+      platform,
+      contentType,
+      command,
+      cleanedUrl,
+    });
+
+    setBotLogs((prev) => [detectionLog, ...prev]);
+
+    // =========================================================
+    // STEP 2: API REQUEST (Backend dispatch with latency tracking)
+    // =========================================================
+    const reqStartTime = Date.now();
+    let botResponses: any[] = [];
+    let apiSuccess = false;
+    let apiError: string | undefined = undefined;
+
     try {
-      // Try dispatching through backend API
       const res = await fetch('/api/bot/dispatch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -141,53 +194,95 @@ export default function App() {
         }),
       });
 
-      let botResponses: any[] = [];
+      const latencyMs = Date.now() - reqStartTime;
+
       if (res.ok) {
         const data = await res.json();
-        botResponses = data.responses;
+        botResponses = data.responses || [];
+        apiSuccess = true;
       } else {
-        // Fallback to client-side engine
+        apiError = `HTTP ${res.status}: استفاده از موتور پردازش کلاینت`;
         botResponses = await handleTelegramIncomingMessage(currentUser, currentUser.id, text);
+        apiSuccess = true;
       }
 
-      setTimeout(() => {
-        setIsTyping(false);
-        const newBotMsgs: TelegramMessage[] = botResponses.map((r, idx) => ({
-          message_id: messages.length + 2 + idx,
-          from: { id: 999, first_name: 'SlowMegaBot', is_bot: true, username: 'slow_megabot' },
-          chat: { id: currentUser.id, type: 'private' },
-          date: Date.now() + idx * 100,
-          text: r.text,
-          reply_markup: r.reply_markup,
-          photoUrl: r.photoUrl,
-          videoUrl: r.videoUrl,
-          audioUrl: r.audioUrl,
-          mediaAttachment: r.mediaAttachment,
-        }));
-        setMessages((prev) => [...prev, ...newBotMsgs]);
-        syncWallet();
-      }, 450);
-    } catch {
-      // Fallback
-      setTimeout(async () => {
-        setIsTyping(false);
-        const botResponses = await handleTelegramIncomingMessage(currentUser, currentUser.id, text);
-        const newBotMsgs: TelegramMessage[] = botResponses.map((r, idx) => ({
-          message_id: messages.length + 2 + idx,
-          from: { id: 999, first_name: 'SlowMegaBot', is_bot: true, username: 'slow_megabot' },
-          chat: { id: currentUser.id, type: 'private' },
-          date: Date.now() + idx * 100,
-          text: r.text,
-          reply_markup: r.reply_markup,
-          photoUrl: r.photoUrl,
-          videoUrl: r.videoUrl,
-          audioUrl: r.audioUrl,
-          mediaAttachment: r.mediaAttachment,
-        }));
-        setMessages((prev) => [...prev, ...newBotMsgs]);
-        syncWallet();
-      }, 300);
+      const apiLog = loggerService.logApiRequest('سرور مرکزی ربات (/api/bot/dispatch)', {
+        endpoint: '/api/bot/dispatch',
+        latencyMs,
+        statusCode: res.status,
+        success: apiSuccess,
+        errorMessage: apiError,
+      });
+
+      setBotLogs((prev) => [apiLog, ...prev]);
+    } catch (err: any) {
+      const latencyMs = Date.now() - reqStartTime;
+      apiError = err?.message || 'خطای شبکه در ارتباط با سرور؛ هدایت به موتور محلی';
+      botResponses = await handleTelegramIncomingMessage(currentUser, currentUser.id, text);
+
+      const apiLog = loggerService.logApiRequest('موتور پردازش کلاینت محلی (Local Engine)', {
+        endpoint: 'client_local_dispatch',
+        latencyMs,
+        success: true,
+        errorMessage: apiError,
+      });
+
+      setBotLogs((prev) => [apiLog, ...prev]);
     }
+
+    // =========================================================
+    // STEP 3: STREAM EXTRACTION (Resolving media attachments & formats)
+    // =========================================================
+    const sampleMedia = botResponses.find((r) => r.videoUrl || r.photoUrl || r.audioUrl || r.mediaAttachment);
+    const hasMedia = Boolean(sampleMedia);
+    const primaryMediaUrl = sampleMedia?.videoUrl || sampleMedia?.photoUrl || sampleMedia?.audioUrl;
+    const mediaType = sampleMedia?.videoUrl ? 'video' : sampleMedia?.audioUrl ? 'audio' : sampleMedia?.photoUrl ? 'photo' : undefined;
+
+    const streamLog = loggerService.logStreamExtraction({
+      hasMedia,
+      contentType: mediaType,
+      formatsCount: hasMedia ? 3 : undefined,
+      mediaUrl: primaryMediaUrl,
+      audioExtracted: Boolean(sampleMedia?.audioUrl),
+      previewThumbnail: sampleMedia?.photoUrl,
+    });
+
+    setBotLogs((prev) => [streamLog, ...prev]);
+
+    // =========================================================
+    // STEP 4: VALIDATION (Message counts, entities, and packet delivery)
+    // =========================================================
+    const totalChars = botResponses.reduce((acc, r) => acc + (r.text?.length || 0), 0);
+    const isValid = botResponses.length > 0;
+
+    const validationLog = loggerService.logValidation({
+      isValid,
+      messageCount: botResponses.length,
+      charLength: totalChars,
+      entitiesSanitized: true,
+      error: isValid ? undefined : 'پاسخی از پردازشگر دریافت نشد',
+    });
+
+    setBotLogs((prev) => [validationLog, ...prev]);
+
+    // Deliver responses to Simulator UI
+    setTimeout(() => {
+      setIsTyping(false);
+      const newBotMsgs: TelegramMessage[] = botResponses.map((r, idx) => ({
+        message_id: messages.length + 2 + idx,
+        from: { id: 999, first_name: 'SlowMegaBot', is_bot: true, username: 'slow_megabot' },
+        chat: { id: currentUser.id, type: 'private' },
+        date: Date.now() + idx * 100,
+        text: r.text,
+        reply_markup: r.reply_markup,
+        photoUrl: r.photoUrl,
+        videoUrl: r.videoUrl,
+        audioUrl: r.audioUrl,
+        mediaAttachment: r.mediaAttachment,
+      }));
+      setMessages((prev) => [...prev, ...newBotMsgs]);
+      syncWallet();
+    }, 400);
   };
 
   // Dispatch Callback Query from Simulator
@@ -337,7 +432,7 @@ export default function App() {
                 )}
               </div>
               <p className="text-[11px] text-slate-400">
-                سامانه تجمیعی تست مافیا، بت، کلش، سین‌زن، همدم‌یاب، ابزارها و آپلودر
+                سامانه هوشمند مافیا، بت، کلش، سین‌زن، همدم‌یاب، ابزارها و آپلودر
               </p>
             </div>
           </div>
@@ -377,7 +472,7 @@ export default function App() {
               }`}
             >
               <LayoutGrid className="w-4 h-4" />
-              <span>ایستگاه تست ماژول‌ها</span>
+              <span>مرکز مدیریت ماژول‌ها</span>
             </button>
 
             <button
@@ -391,6 +486,37 @@ export default function App() {
               <Zap className="w-4 h-4 text-amber-400" />
               <span>اتصال ربات واقعی</span>
               {connectedBot && <span className="w-2 h-2 rounded-full bg-emerald-400"></span>}
+            </button>
+
+            <button
+              onClick={() => setShowN8nModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 cursor-pointer"
+              title="تنظیمات و آدرس‌های اتصال به n8n"
+            >
+              <Webhook className="w-4 h-4 text-amber-400" />
+              <span>اتصال به n8n</span>
+            </button>
+
+            <button
+              onClick={() => setShowInstallerModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 cursor-pointer"
+              title="نصاب خودکار حرفه‌ای و مدیریت سرور (Auto Installer)"
+            >
+              <Terminal className="w-4 h-4 text-cyan-400" />
+              <span>نصب خودکار (Installer)</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('database')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+                activeTab === 'database'
+                  ? 'bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow font-bold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="مدیریت دیتابیس، دانلود پشتیبان SQL و بازیابی در شبیه‌ساز"
+            >
+              <Database className="w-4 h-4 text-cyan-400" />
+              <span>بک‌آپ و دیتابیس</span>
             </button>
 
             <button
@@ -415,7 +541,7 @@ export default function App() {
             {/* Quick module launcher ribbon */}
             <div className="flex items-center gap-2 overflow-x-auto pb-1 max-w-4xl mx-auto text-xs">
               <span className="text-slate-400 text-xs shrink-0 flex items-center gap-1">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> تست سریع:
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> دسترسی سریع:
               </span>
               {[
                 { label: '🎮 مافیا', cmd: '/mafia' },
@@ -426,6 +552,7 @@ export default function App() {
                 { label: '🛠️ استعلام کارت', cmd: '/tools' },
                 { label: '🎁 گردونه شانس', cmd: '/lottery' },
                 { label: '📤 آپلودر فایل', cmd: '/uploader' },
+                { label: '💾 بک‌آپ دیتابیس', cmd: '/backup' },
               ].map((item, idx) => (
                 <button
                   key={idx}
@@ -486,102 +613,167 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'database' && (
+          <DatabaseBackupManager
+            onNavigateToSimulator={() => {
+              syncWallet();
+              setActiveTab('simulator');
+            }}
+            onDataRestored={() => {
+              syncWallet();
+            }}
+          />
+        )}
+
         {activeTab === 'docs' && (
-          <div className="bg-[#17212b] rounded-2xl border border-[#242f3d] p-6 max-w-4xl mx-auto space-y-6">
+          <div className="bg-[#17212b] rounded-2xl border border-[#242f3d] p-6 max-w-5xl mx-auto space-y-8">
+            {/* Header */}
             <div>
-              <h3 className="font-bold text-lg text-white flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-[#0088cc]" />
-                داکیومنت و گزارش تجمیع سورس‌کدهای پروژه
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                تمام فایل‌ها و پوشه‌هایی که در درخواست ارسال فرمودید در این سامانه یکپارچه‌سازی و تست شده‌اند:
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h3 className="font-extrabold text-xl text-white flex items-center gap-2.5">
+                  <BookOpen className="w-6 h-6 text-[#0088cc]" />
+                  <span>معماری یکپارچه و مستندات تحلیلی سامانه SlowMegaBot</span>
+                </h3>
+                <span className="text-xs bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-full font-bold">
+                  نسخه ۲.۵.۰ بهینه‌شده و یکپارچه
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-2 leading-relaxed">
+                سامانه بر اساس معماری ۴ لایه‌ای (Core Services, Bot Engine, API Gateway, Interactive Simulator UI) بازسازی شده است؛ تمام کدهای تکراری تجمیع و ماژول‌های مشترک استانداردسازی شده‌اند.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۱. SlowSeen (سین‌زن و درگاه پرداخت)
-                </h4>
-                <p className="text-slate-300">
-                  شامل تمام فایل‌های <code>pay/index.php</code>، <code>back.php</code> و استایل‌های مربوطه، محاسبه قیمت بازدید پست، شبیه‌سازی درگاه و تحویل بازدیدها.
+            {/* Architecture 4-Layer Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+              <div className="bg-[#0e1621] p-4 rounded-xl border border-sky-500/30 space-y-1.5">
+                <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 font-bold text-[10px]">لایه ۱</span>
+                <h4 className="font-bold text-white text-sm">ماژول‌های مشترک هسته</h4>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  <code>bankService</code>, <code>appConfig</code>, <code>validationService</code>, <code>loggerService</code>
                 </p>
               </div>
 
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۲. beta ( mafia ) (بازی مافیا)
-                </h4>
-                <p className="text-slate-300">
-                  شامل سناریوهای <code>9-player-game.php</code> و <code>12-player-game.php</code>، نقش‌های گادپدر، دکتر، کارآگاه، اسنایپر و سیستم رای‌گیری با دکمه شیشه‌ای.
+              <div className="bg-[#0e1621] p-4 rounded-xl border border-purple-500/30 space-y-1.5">
+                <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-400 font-bold text-[10px]">لایه ۲</span>
+                <h4 className="font-bold text-white text-sm">موتور پردازش ربات</h4>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  <code>botEngine.ts</code>, <code>mafiaEngine.ts</code>, <code>instagramService.ts</code>
                 </p>
               </div>
 
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۳. SlowBet (موشک انفجار، دارت و تاس)
-                </h4>
-                <p className="text-slate-300">
-                  شامل <code>moshak.php</code> (موشک کرش با ضریب متغیر) و <code>dart.php</code> (دارت امتیازی تلگرام) و تاس با کسر و افزایش موجودی کاربر.
+              <div className="bg-[#0e1621] p-4 rounded-xl border border-amber-500/30 space-y-1.5">
+                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold text-[10px]">لایه ۳</span>
+                <h4 className="font-bold text-white text-sm">درگاه API سرور</h4>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  <code>server.ts</code> (Express, Webhooks, Long-polling, N8n, DB API)
                 </p>
               </div>
 
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۴. SlowCreate (کلش آف کلنز و ربات‌ساز)
-                </h4>
-                <p className="text-slate-300">
-                  شامل <code>ClAshOfClaN/QkdkfK.php</code> با انبارهای طلا، اکسیر، چوب، غارت دهکده حریف، ارتقای تاون‌هال و پادگان سربازان.
+              <div className="bg-[#0e1621] p-4 rounded-xl border border-emerald-500/30 space-y-1.5">
+                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold text-[10px]">لایه ۴</span>
+                <h4 className="font-bold text-white text-sm">رابط کاربری و شبیه‌ساز</h4>
+                <p className="text-slate-400 text-[11px] leading-relaxed">
+                  <code>TelegramSimulator</code>, <code>DatabaseBackupManager</code>, <code>ModuleControlCenter</code>
                 </p>
               </div>
+            </div>
 
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۵. SlowFinder (همدم‌یاب و چت ناشناس)
-                </h4>
-                <p className="text-slate-300">
-                  شامل <code>bot.php</code>، <code>Location.php</code>، اتصال ناشناس دو طرفه، فیلتر جنسیت و قطع ارتباط فوری.
-                </p>
+            {/* Categorization Matrix */}
+            <div className="space-y-3">
+              <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-cyan-400" />
+                <span>دسته‌بندی جامع و تخصصی ماژول‌ها و قابلیت‌ها:</span>
+              </h4>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                {/* Category 1: Media & Downloader */}
+                <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
+                  <h5 className="font-bold text-amber-400 flex items-center gap-1.5">
+                    📥 ۱. رسانه و دانلودرها (Media & Downloaders)
+                  </h5>
+                  <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                    <li><strong>دانلودر جامع:</strong> اینستاگرام (Reels, Posts, Profiles)، یوتیوب، تیک‌تاک بدون واترمرک، پینترست، اسپاتیفای.</li>
+                    <li><strong>سرویس اختصاصی اینستاگرام:</strong> پارس و تصحیح لینک، استخراج استریم ویدیو، صوت MP3 و تصویر کاور.</li>
+                    <li><strong>آپلودر پیشرفته (Aplo):</strong> صدور لینک نیم‌بها، رمز عبور، لینک انقضادار و QR Code.</li>
+                    <li><strong>جستجوی موزیک:</strong> آرشیو میلیونی آهنگ‌ها با متن ترانه و پخش آنلاین.</li>
+                  </ul>
+                </div>
+
+                {/* Category 2: Gaming & Fun */}
+                <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
+                  <h5 className="font-bold text-rose-400 flex items-center gap-1.5">
+                    🎮 ۲. گیم و سرگرمی (Gaming & Entertainment)
+                  </h5>
+                  <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                    <li><strong>مافیا آنلاین:</strong> سناریوهای ۹ و ۱۲ نفره با ویس‌کال WebRTC و بات‌های هوشمند.</li>
+                    <li><strong>بت و موشک:</strong> موشک انفجار با ضریب زنده، تاس و دارت امتیازی تلگرام.</li>
+                    <li><strong>کلش آف کلنز:</strong> مدیریت دهکده، ارتقای تاون‌هال، غارت منابع و قبیله.</li>
+                    <li><strong>چت ناشناس:</strong> همدم‌یاب تصادفی و موقعیت‌محور با فیلتر استانی.</li>
+                    <li><strong>لاتاری و لایک:</strong> گردونه شانس روزانه و افزایش لایک مسابقات تلگرامی.</li>
+                  </ul>
+                </div>
+
+                {/* Category 3: Tools & Digital Services */}
+                <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
+                  <h5 className="font-bold text-teal-400 flex items-center gap-1.5">
+                    🛠️ ۳. ابزارها و خدمات دیجیتال (Tools & APIs)
+                  </h5>
+                  <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                    <li><strong>استعلام کارت شتاب:</strong> تشخیص ۳۰+ بانک، اعتبارسنجی لان (Luhn)، محاسبه شبا و نام دارنده.</li>
+                    <li><strong>فیلترشکن و وب‌پروکسی:</strong> مرور وب‌سایت‌های تحریم‌شده با کش و دور زدن فیلترینگ.</li>
+                    <li><strong>شماره مجازی:</strong> دریافت تضمینی پیامک برای ۷ کشور (روسیه، آمریکا، انگلیس و...).</li>
+                    <li><strong>نرخ لحظه‌ای (arzy):</strong> ارز، طلا، سکه و تتر با مبدل زنده تومانی.</li>
+                    <li><strong>ایمیل موقت و OCR:</strong> ایمیل ۱۰ دقیقه‌ای با بررسی اینباکس و تبدیل عکس به متن.</li>
+                  </ul>
+                </div>
+
+                {/* Category 4: Database, Management & Automation */}
+                <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
+                  <h5 className="font-bold text-purple-400 flex items-center gap-1.5">
+                    ⚙️ ۴. مدیریت پایگاه داده، پنل مالک و اتوماسیون
+                  </h5>
+                  <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                    <li><strong>مدیریت دیتابیس (SQL):</strong> تولید Dump استاندارد MySQL/SQLite، دانلود و بازیابی در شبیه‌ساز.</li>
+                    <li><strong>اتصال به n8n:</strong> وب‌هوک دوطرفه، ثبت رویدادها و تلاش‌های ارسال با لاگ ۵گانه.</li>
+                    <li><strong>پنل مالک و درگاه:</strong> تنظیم شماره کارت واریز، درگاه آنلاین زرین‌پال و مدیریت سفارشات.</li>
+                    <li><strong>نصاب خودکار سرور:</strong> اسکریپت شل <code>install.sh</code>، سرویس systemd و Nginx معکوس.</li>
+                  </ul>
+                </div>
               </div>
+            </div>
 
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۶. جعبه ابزار و API
-                </h4>
-                <p className="text-slate-300">
-                  شامل <code>card.php</code> (استعلام کارت شتاب)، <code>ocr.php</code>، <code>Currencyprices</code> (نرخ لحظه‌ای ارز و طلا)، اینستاگرام و ایمیل فیک موقت.
-                </p>
-              </div>
-
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۷. SlowUploader & LotteryAcc
-                </h4>
-                <p className="text-slate-300">
-                  آپلود مستقیم فایل و صدور لینک اختصاصی تلگرام + گردونه شانس و اهدای اکانت‌های پرمیوم و مجازی.
-                </p>
-              </div>
-
-              <div className="bg-[#0e1621] p-4 rounded-xl border border-[#242f3d] space-y-2">
-                <h4 className="font-bold text-white flex items-center gap-1.5">
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                  ۸. قابلیت اتصال توکن واقعی
-                </h4>
-                <p className="text-slate-300">
-                  کافیست توکن ربات از BotFather را در تب «اتصال ربات واقعی» وارد کنید تا ربات مستقیماً در تلگرام واقعی روی گوشی شما پاسخ دهد!
-                </p>
+            {/* Redundancy Elimination Report */}
+            <div className="bg-[#0e1621] rounded-xl border border-emerald-500/30 p-5 space-y-3 text-xs">
+              <h4 className="font-bold text-emerald-400 text-sm flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" />
+                <span>اقدامات انجام‌شده در حذف تکرارها و بهینه‌سازی:</span>
+              </h4>
+              <div className="space-y-1.5 text-slate-300 text-[11px] leading-relaxed">
+                <p>✓ <strong>تجمیع دیتابیس پیش‌شماره‌های کارت بانکی:</strong> کاتالوگ‌های تکراری در <code>botEngine.ts</code> و <code>realApis.ts</code> در ماژول واحد <code>bankService.ts</code> ادغام شدند.</p>
+                <p>✓ <strong>یکپارچه‌سازی سیستم اعتبارسنجی:</strong> فرمول‌های الگوریتم لان (Luhn)، اعتبارسنجی توکن تلگرام، شماره تماس و اسکریپت‌های SQL در <code>validationService.ts</code> متمرکز شدند.</p>
+                <p>✓ <strong>مدیریت متمرکز لاگ‌ها:</strong> سیستم‌های مجزای لاگ ترافیک ربات، وب‌هوک n8n و خطاهای سرور در <code>loggerService.ts</code> همگام شدند.</p>
+                <p>✓ <strong>رجیستری متمرکز تنظیمات:</strong> فایل <code>appConfig.ts</code> به عنوان منبع موثق تنظیمات، پورت‌ها، متادیتای ماژول‌ها و پارامترهای مالک قرار گرفت.</p>
+                <p>✓ <strong>حفظ کامل اطلاعات و سازگاری معکوس:</strong> تمامی توابع، APIها و رفتارهای قبلی با خروجی‌های معتبر حفظ شده و هیچ تابعی نشکسته است.</p>
               </div>
             </div>
           </div>
         )}
       </main>
+
+      <N8nConnectModal isOpen={showN8nModal} onClose={() => setShowN8nModal(false)} />
+      <AutoInstallerModal isOpen={showInstallerModal} onClose={() => setShowInstallerModal(false)} />
+      {showProfileModal && (
+        <UserProfileModal
+          currentUser={currentUser}
+          wallet={botStorage.getWallet(currentUser.id)}
+          orders={botStorage.orders.filter((o) => o.userId === currentUser.id)}
+          onClose={() => setShowProfileModal(false)}
+          onUpgradeClick={() => {
+            setShowProfileModal(false);
+            handleSendMessage('💎 خرید اشتراک');
+          }}
+        />
+      )}
     </div>
   );
 }

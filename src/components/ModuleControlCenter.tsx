@@ -1,3 +1,4 @@
+import { DownloaderDiagnosticsModal } from './DownloaderDiagnosticsModal';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   ShieldAlert,
@@ -144,14 +145,16 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
   );
 
   // 8. UNIVERSAL MEGA DOWNLOADER STATE (اینستاگرام، یوتیوب، تیک‌تاک، پینترست، توییتر، اسپاتیفای، آپارات)
-  const [universalUrl, setUniversalUrl] = useState('https://www.instagram.com/reel/C4x891ABcd/');
-  const [universalItem, setUniversalItem] = useState<UniversalDownloadItem>(() =>
-    fetchUniversalDownload('https://www.instagram.com/reel/C4x891ABcd/')
-  );
+  const [universalUrl, setUniversalUrl] = useState('');
+  const [universalItem, setUniversalItem] = useState<UniversalDownloadItem | null>(null);
   const [universalLoading, setUniversalLoading] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string>('dl_insta_1');
   const [captionCopied, setCaptionCopied] = useState(false);
   const [formatFilter, setFormatFilter] = useState<'all' | 'video' | 'audio' | 'image' | 'file'>('all');
+  const [showDiagnosticsModal, setShowDiagnosticsModal] = useState(false);
+  const [downloadAuditSession, setDownloadAuditSession] = useState<any>(null);
+  const [recentAuditSessions, setRecentAuditSessions] = useState<any[]>([]);
+  const [showAuditLogs, setShowAuditLogs] = useState(false);
 
   // ROCKET CRASH INTERACTIVE STATE
   const [rocketFlying, setRocketFlying] = useState(false);
@@ -227,7 +230,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
         '💰 ۵۰,۰۰۰ تومان شارژ کیف پول!',
         '🪙 ۲,۰۰۰ سکه بازی!',
         '👁️ ۱,۰۰۰ سین هدیه کانال!',
-        '📱 شماره مجازی تستی فعال!',
+        '📱 شماره مجازی فعال گردید!',
       ];
       const win = prizes[Math.floor(Math.random() * prizes.length)];
       setLotteryPrize(win);
@@ -244,17 +247,17 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
           <div className="flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-amber-400" />
             <h3 className="font-bold text-lg text-white">
-              مرکز کنترل و تست زنده ماژول‌های ده‌گانه ربات
+              مرکز کنترل و مدیریت ماژول‌های ده‌گانه ربات
             </h3>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            تمامی قابلیت‌های SlowMegaBot را به‌صورت گرافیکی و همزمان در بات تست کنید
+            تمامی قابلیت‌های SlowMegaBot به‌صورت عملیاتی و آنلاین
           </p>
         </div>
 
         <div className="bg-[#242f3d] px-3 py-1.5 rounded-xl border border-[#2e3d4e] text-xs flex items-center gap-2 text-slate-300">
           <Wallet className="w-4 h-4 text-emerald-400" />
-          <span>موجودی تست:</span>
+          <span>موجودی کیف‌پول:</span>
           <span className="font-bold text-emerald-400">{walletBalance.toLocaleString('fa-IR')} ت</span>
         </div>
       </div>
@@ -351,42 +354,6 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               <span className="self-start sm:self-auto text-[10px] px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono font-bold">
                 All-in-One Engine v4.5
               </span>
-            </div>
-
-            {/* Quick 1-Click Test Presets for All Platforms */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-bold text-slate-300">
-                  ⚡ تست سریع ۱ کلیکه (پلتفرم‌های پشتیبانی‌شده):
-                </span>
-                <span className="text-amber-400 font-mono text-[10px]">
-                  {UNIVERSAL_DOWNLOAD_PRESETS.length} پلتفرم آماده
-                </span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-1.5">
-                {UNIVERSAL_DOWNLOAD_PRESETS.map((preset) => {
-                  const isSelected = selectedPresetId === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setSelectedPresetId(preset.id);
-                        setUniversalUrl(preset.url);
-                        setUniversalItem(preset);
-                        confetti({ particleCount: 30, spread: 60 });
-                      }}
-                      className={`px-2 py-2 rounded-xl text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
-                        isSelected
-                          ? 'bg-amber-500/20 border-amber-400 text-amber-300 font-bold shadow-md shadow-amber-500/10'
-                          : 'bg-[#17212b] border-[#242f3d] text-slate-300 hover:text-white hover:bg-[#202d3b]'
-                      }`}
-                    >
-                      <span className="text-sm">{preset.platformIcon}</span>
-                      <span className="truncate">{preset.platformNameFa.split(' ')[0]}</span>
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             {/* دکمه‌های تخصصی و کاربردی دانلودر غیره (Auxiliary Downloader Buttons) */}
@@ -548,16 +515,29 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                   className="flex-1 bg-[#17212b] border border-[#2e3d4e] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:border-amber-400"
                 />
                 <button
-                  onClick={() => {
+                  onClick={async () => {
+                    const clean = universalUrl.trim();
+                    if (!clean) return;
                     setUniversalLoading(true);
-                    setTimeout(() => {
-                      const res = fetchUniversalDownload(universalUrl);
+                    try {
+                      const res = await fetch('/api/downloader/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: clean }),
+                      }).then(r => r.json());
                       setUniversalItem(res);
-                      setUniversalLoading(false);
+                      if (res.trackingSession) {
+                        setDownloadAuditSession(res.trackingSession);
+                      }
                       confetti({ particleCount: 45, spread: 70 });
-                    }, 500);
+                    } catch (e) {
+                      const fallback = fetchUniversalDownload(clean);
+                      setUniversalItem(fallback);
+                    } finally {
+                      setUniversalLoading(false);
+                    }
                   }}
-                  disabled={universalLoading}
+                  disabled={universalLoading || !universalUrl.trim()}
                   className="px-5 py-2 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-bold rounded-xl text-xs shadow-md cursor-pointer flex items-center justify-center gap-1.5 transition-all"
                 >
                   {universalLoading ? (
@@ -570,6 +550,15 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               </div>
             </div>
 
+                        {!universalItem && (
+              <div className="bg-[#17212b] rounded-xl border border-dashed border-[#2e3d4e] p-6 text-center space-y-2">
+                <DownloadCloud className="w-8 h-8 text-amber-400 mx-auto opacity-70" />
+                <h5 className="font-bold text-xs text-white">آماده دریافت و پردازش مستقیم لینک</h5>
+                <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                  لینک هر ویدیو، ریلز، پست، استوری، کلیپ یوتیوب، تیک‌تاک یا آهنگ را در کادر بالا وارد کرده و دکمه «تحلیل لینک و دریافت فایل» را لمس کنید.
+                </p>
+              </div>
+            )}
             {/* Universal Media Result Card */}
             {universalItem && (
               <div className="bg-[#17212b] rounded-xl border border-[#2e3d4e] p-4 space-y-4">
@@ -834,7 +823,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                 {/* Live Preview Player */}
                 <div className="pt-3 border-t border-[#242f3d]">
                   <span className="text-xs font-bold text-slate-300 block mb-2">
-                    پیش‌نمایش آنلاین در محیط تست:
+                    پیش‌نمایش آنلاین وبلاگ:
                   </span>
                   {universalItem.formats.some((f) => f.type === 'video') ? (
                     <div className="rounded-xl overflow-hidden bg-black max-h-56 flex justify-center">
@@ -867,9 +856,128 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                 </div>
               </div>
             )}
+
+            {/* 10-Step Download Audit Tracker Component */}
+            {downloadAuditSession && (
+              <div className="bg-[#121c27] rounded-xl border border-sky-500/30 p-4 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#242f3d] pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-sky-500/20 text-sky-400">
+                      <FileText className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h5 className="font-bold text-xs text-white flex items-center gap-2">
+                        <span>لاگ و رهگیری ۱۰ مرحله‌ای دانلود (Request Audit)</span>
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 text-[10px] font-mono font-bold">
+                          {downloadAuditSession.success ? '✓ موفق' : '⚠️ خطا'}
+                        </span>
+                      </h5>
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        شناسه پیگیری: {downloadAuditSession.requestId}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {downloadAuditSession.totalDurationMs && (
+                      <span className="text-[10px] font-mono text-amber-300 bg-amber-500/10 px-2 py-1 rounded-md border border-amber-500/30">
+                        ⏱️ زمان کل: {downloadAuditSession.totalDurationMs}ms
+                      </span>
+                    )}
+                    <button
+                      onClick={async () => {
+                        const res = await fetch('/api/downloader/logs').then(r => r.json());
+                        if (res.sessions) setRecentAuditSessions(res.sessions);
+                        setShowAuditLogs(!showAuditLogs);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-[#1a2736] hover:bg-[#233549] text-sky-300 text-[10px] border border-sky-500/30 cursor-pointer transition-colors"
+                    >
+                      {showAuditLogs ? 'بستن آرشیو لاگ‌ها' : '📋 آرشیو تمام دانلودها'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 10-Step Checklist */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  {downloadAuditSession.stages?.map((stage: any, idx: number) => (
+                    <div
+                      key={idx}
+                      className={`p-2 rounded-lg border flex items-center justify-between gap-2 ${
+                        stage.status === 'success'
+                          ? 'bg-[#172433] border-emerald-500/30 text-slate-200'
+                          : stage.status === 'failed'
+                          ? 'bg-rose-950/30 border-rose-500/40 text-rose-200'
+                          : 'bg-[#17212b] border-[#242f3d] text-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 truncate">
+                        <span className="w-5 h-5 rounded-full bg-[#0e1621] border border-slate-700 flex items-center justify-center text-[10px] font-bold font-mono text-sky-300 shrink-0">
+                          {stage.step}
+                        </span>
+                        <div className="truncate">
+                          <span className="font-medium text-[11px] block truncate">
+                            {stage.stageNameFa}
+                          </span>
+                          {stage.errorMessage && (
+                            <span className="text-[10px] text-rose-400 truncate block">
+                              دلیل: {stage.errorMessage}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0 text-[10px] font-mono text-slate-400">
+                        {stage.durationMs !== undefined && (
+                          <span className="text-amber-400/80">+{stage.durationMs}ms</span>
+                        )}
+                        <span className={stage.status === 'success' ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                          {stage.status === 'success' ? '✓' : '✗'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Recent Archive Dropdown */}
+                {showAuditLogs && (
+                  <div className="mt-3 p-3 bg-[#0e1621] rounded-xl border border-[#242f3d] space-y-2">
+                    <span className="text-xs font-bold text-slate-300 block">
+                      📜 آخرین درخواست‌های دانلود ثبت‌شده در سامانه:
+                    </span>
+                    {recentAuditSessions.length === 0 ? (
+                      <p className="text-[11px] text-slate-500">هیچ لاگ دیگری در حافظه موجود نیست.</p>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {recentAuditSessions.map((s: any) => (
+                          <div
+                            key={s.requestId}
+                            className="p-2 rounded-lg bg-[#17212b] border border-[#242f3d] flex items-center justify-between text-[11px]"
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <span className={s.success ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                {s.success ? '✓' : '✗'}
+                              </span>
+                              <span className="font-mono text-sky-300 text-[10px]">{s.requestId}</span>
+                              <span className="text-slate-400 truncate max-w-[200px]">{s.cleanedUrl || s.rawInput}</span>
+                            </div>
+                            <span className="text-slate-500 text-[10px] font-mono shrink-0">
+                              {s.totalDurationMs ? `${s.totalDurationMs}ms` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
+
+      {/* Downloader Diagnostics Modal */}
+      <DownloaderDiagnosticsModal
+        isOpen={showDiagnosticsModal}
+        onClose={() => setShowDiagnosticsModal(false)}
+      />
 
       {/* 1. SLOWBET & ROCKET CRASH */}
       {activeTab === 'bet' && (
@@ -994,7 +1102,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               </div>
               <div>
                 <h5 className="font-bold text-xs text-white">پرتاب دارت تلگرام</h5>
-                <p className="text-[11px] text-slate-400">تست شانس پرتاب دارت با ایموجی</p>
+                <p className="text-[11px] text-slate-400">پرتاب دارت با ایموجی تلگرام</p>
               </div>
             </button>
 
@@ -1007,7 +1115,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               </div>
               <div>
                 <h5 className="font-bold text-xs text-white">پرتاب تاس جفت/فرد</h5>
-                <p className="text-[11px] text-slate-400">تست تاس عددی با جایزه تستی</p>
+                <p className="text-[11px] text-slate-400">پرتاب تاس با جایزه نقدی</p>
               </div>
             </button>
 
@@ -1020,7 +1128,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               </div>
               <div>
                 <h5 className="font-bold text-xs text-white">شیر یا خط مهارتی</h5>
-                <p className="text-[11px] text-slate-400">تست سکه شیر و خط ۵۰/۵۰</p>
+                <p className="text-[11px] text-slate-400">شیر یا خط ۵۰/۵۰ و سنجش مهارت</p>
               </div>
             </button>
           </div>
@@ -1252,12 +1360,12 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               <Eye className="w-5 h-5 text-sky-400" />
               <h4 className="font-bold text-sm text-white">پنل سفارش افزایش سین پست (SlowSeen)</h4>
             </div>
-            <span className="text-xs text-slate-400">تست با درگاه شبیه‌سازی شتاب</span>
+            <span className="text-xs text-slate-400">درگاه پرداخت الکترونیک شتاب</span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             {[
-              { title: '۱۰۰ سین تستی', price: 'رایگان', cb: 'cb_seen_free_test', highlight: true },
+              { title: '۱۰۰ سین هدیه', price: 'رایگان', cb: 'cb_seen_free_test', highlight: true },
               { title: '۵۰۰ سین پست', price: '۵,۰۰۰ تومان', cb: 'cb_seen_free_test' },
               { title: '۱,۰۰۰ سین سرعتی', price: '۹,۰۰۰ تومان', cb: 'cb_seen_free_test' },
               { title: '۵,۰۰۰ سین طلایی', price: '۳۵,۰۰۰ تومان', cb: 'cb_seen_free_test' },
@@ -1312,28 +1420,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                   استعلام زنده
                 </button>
               </div>
-              <div className="flex gap-2 text-[10px]">
-                <button
-                  onClick={() => onQuickAction('6037991845621098')}
-                  className="text-slate-400 hover:text-white underline cursor-pointer"
-                >
-                  کارت نمونه ملی
-                </button>
-                <span>•</span>
-                <button
-                  onClick={() => onQuickAction('6104337920194831')}
-                  className="text-slate-400 hover:text-white underline cursor-pointer"
-                >
-                  کارت نمونه ملت
-                </button>
-                <span>•</span>
-                <button
-                  onClick={() => onQuickAction('5892101234567890')}
-                  className="text-slate-400 hover:text-white underline cursor-pointer"
-                >
-                  کارت نمونه سپه
-                </button>
-              </div>
+              
             </div>
 
             {/* Currency & Crypto Ticker */}
@@ -1428,7 +1515,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
             onClick={() => onQuickAction('cb_uploader_sample')}
             className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-xs font-bold shadow-md cursor-pointer hover:opacity-95"
           >
-            تست ایجاد لینک دانلود نمونه در چت
+            ایجاد لینک مستقیم دانلود در چت
           </button>
         </div>
       )}
@@ -1478,7 +1565,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
               <Heart className="w-5 h-5 text-pink-500" />
               <h4 className="font-bold text-sm text-white">سامانه افزایش لایک و واکنش چالش (SlowLike)</h4>
             </div>
-            <span className="text-xs text-slate-400">تست ارسال واکنش</span>
+            <span className="text-xs text-slate-400">ارسال آنی واکنش</span>
           </div>
 
           <div className="grid grid-cols-3 gap-3">

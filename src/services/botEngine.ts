@@ -41,12 +41,15 @@ import {
   detectContentType,
   extractUrlFromText,
 } from './realApis';
+import { parseInstagramUrl, extractInstagramRawUrl } from './instagramService';
 import {
   MafiaEngine,
   MAFIA_ROLES_CATALOG,
   activeMafiaGames,
   FullMafiaGame,
 } from './mafiaEngine';
+import { platformStore } from './platformStore';
+import { IRANIAN_BANKS_CATALOG } from './bankService';
 
 export interface OwnerConfig {
   cardNumber: string;
@@ -55,6 +58,23 @@ export interface OwnerConfig {
   gatewayName: string;
   gatewayActive: boolean;
   gatewayMerchantId: string;
+}
+
+export interface BotUserRecord {
+  id: string; // e.g. "tg_8623750026" or "bale_857701256" or "rubika_u0J1q4A052b3e360c26b14d89fc1cdf0"
+  rawId: string | number;
+  platform: 'telegram' | 'bale' | 'rubika' | 'simulator';
+  firstName: string;
+  lastName?: string;
+  username?: string;
+  firstSeen: string;
+  lastSeen: string;
+  interactionsCount: number;
+  walletBalance: number;
+  coins: number;
+  subscriptionTier: 'free' | 'premium' | 'vip';
+  lastAction?: string;
+  downloadsCount: number;
 }
 
 export interface PurchaseOrder {
@@ -69,6 +89,112 @@ export interface PurchaseOrder {
 
 // In-Memory Global State for the Bot Engine
 class BotStorage {
+  users: Map<string, BotUserRecord> = new Map();
+
+  recordUserActivity(
+    platform: 'telegram' | 'bale' | 'rubika' | 'simulator',
+    user: { id: string | number; first_name?: string; last_name?: string; username?: string },
+    actionText?: string
+  ): BotUserRecord {
+    const rawId = user.id;
+    const userKey = `${platform}_${rawId}`;
+    const nowStr = new Date().toLocaleString('fa-IR');
+    const numId = typeof rawId === 'number' ? rawId : parseInt(String(rawId).replace(/\D/g, '') || '888888', 10);
+    const wallet = this.getWallet(numId);
+
+    let record = this.users.get(userKey);
+    if (!record) {
+      record = {
+        id: userKey,
+        rawId,
+        platform,
+        firstName: user.first_name || 'کاربر',
+        lastName: user.last_name || '',
+        username: user.username || '',
+        firstSeen: nowStr,
+        lastSeen: nowStr,
+        interactionsCount: 1,
+        walletBalance: wallet.balance,
+        coins: wallet.coins,
+        subscriptionTier: wallet.subscriptionTier,
+        lastAction: actionText ? actionText.slice(0, 60) : 'شروع فعالیت',
+        downloadsCount: 0,
+      };
+      this.users.set(userKey, record);
+    } else {
+      record.lastSeen = nowStr;
+      record.interactionsCount += 1;
+      if (user.first_name) record.firstName = user.first_name;
+      if (user.last_name) record.lastName = user.last_name;
+      if (user.username) record.username = user.username;
+      record.walletBalance = wallet.balance;
+      record.coins = wallet.coins;
+      record.subscriptionTier = wallet.subscriptionTier;
+      if (actionText) record.lastAction = actionText.slice(0, 60);
+    }
+
+    if (actionText && (actionText.includes('instagram.com') || actionText.includes('youtube.com') || actionText.includes('tiktok.com'))) {
+      record.downloadsCount += 1;
+    }
+
+    return record;
+  }
+
+  exportData(): any {
+    const usersArr = Array.from(this.users.values());
+    const tgCount = usersArr.filter((u) => u.platform === 'telegram').length;
+    const baleCount = usersArr.filter((u) => u.platform === 'bale').length;
+    const rubikaCount = usersArr.filter((u) => u.platform === 'rubika').length;
+
+    return {
+      version: '2.5.0',
+      updatedAt: new Date().toISOString(),
+      stats: {
+        totalUsers: usersArr.length,
+        telegramUsers: tgCount,
+        baleUsers: baleCount,
+        rubikaUsers: rubikaCount,
+        totalOrders: this.orders.length,
+      },
+      users: usersArr,
+      wallets: Array.from(this.wallets.values()),
+      orders: this.orders,
+      clashVillages: Array.from(this.clashVillages.values()),
+      seenOrders: this.seenOrders,
+      ownerConfig: this.ownerConfig,
+    };
+  }
+
+  importData(data: any): void {
+    if (!data) return;
+    if (Array.isArray(data.users)) {
+      this.users.clear();
+      for (const u of data.users) {
+        if (u && u.id) this.users.set(u.id, u);
+      }
+    }
+    if (Array.isArray(data.wallets)) {
+      this.wallets.clear();
+      for (const w of data.wallets) {
+        if (w && w.userId) this.wallets.set(w.userId, w);
+      }
+    }
+    if (Array.isArray(data.orders)) {
+      this.orders = data.orders;
+    }
+    if (Array.isArray(data.clashVillages)) {
+      this.clashVillages.clear();
+      for (const v of data.clashVillages) {
+        if (v && v.userId) this.clashVillages.set(v.userId, v);
+      }
+    }
+    if (Array.isArray(data.seenOrders)) {
+      this.seenOrders = data.seenOrders;
+    }
+    if (data.ownerConfig) {
+      this.ownerConfig = data.ownerConfig;
+    }
+  }
   wallets: Map<number, UserWallet> = new Map();
   mafiaGames: Map<number, MafiaGame> = new Map();
   clashVillages: Map<number, ClashVillage> = new Map();
@@ -189,46 +315,304 @@ export const MAIN_INLINE_KEYBOARD: InlineKeyboardMarkup = {
   ],
 };
 
-// Bank BIN database for Card lookup
-export const BANK_CARD_PREFIXES: Record<string, { bank: string; color: string; logo: string }> = {
-  '603799': { bank: 'بانک ملی ایران', color: 'from-blue-600 to-indigo-800', logo: '🏛️' },
-  '610433': { bank: 'بانک ملت', color: 'from-red-600 to-rose-800', logo: '🔴' },
-  '589210': { bank: 'بانک سپه', color: 'from-amber-600 to-yellow-800', logo: '🪙' },
-  '627353': { bank: 'بانک تجارت', color: 'from-teal-600 to-emerald-800', logo: '🏢' },
-  '621986': { bank: 'بانک سامان', color: 'from-sky-500 to-blue-700', logo: '🌊' },
-  '502229': { bank: 'بانک پاسارگاد', color: 'from-yellow-500 to-amber-700', logo: '🦁' },
-  '639346': { bank: 'بانک سینا', color: 'from-purple-600 to-indigo-900', logo: '🌟' },
-  '505785': { bank: 'ایران زمین', color: 'from-emerald-600 to-teal-800', logo: '🌱' },
-  '603769': { bank: 'بانک صادرات ایران', color: 'from-blue-700 to-cyan-900', logo: '🔷' },
-  '627412': { bank: 'بانک اقتصاد نوین', color: 'from-violet-600 to-purple-800', logo: '💜' },
-  '622106': { bank: 'بانک پارسیان', color: 'from-red-500 to-amber-600', logo: '🦅' },
-  '502908': { bank: 'بانک توسعه تعاون', color: 'from-blue-500 to-cyan-600', logo: '🤝' },
-  '636795': { bank: 'بانک مرکزی / سایر', color: 'from-gray-600 to-slate-800', logo: '💳' },
-  '504706': { bank: 'بانک شهر', color: 'from-orange-500 to-red-600', logo: '🏙️' },
-  '603770': { bank: 'بانک کشاورزی', color: 'from-green-600 to-emerald-800', logo: '🌾' },
-  '628023': { bank: 'بانک مسکن', color: 'from-orange-600 to-amber-700', logo: '🏠' },
-  '505416': { bank: 'بانک گردشگری', color: 'from-sky-600 to-indigo-700', logo: '✈️' },
-  '585983': { bank: 'بانک تجارت / رسالت', color: 'from-blue-600 to-blue-900', logo: '📘' },
-  '627760': { bank: 'پست بانک ایران', color: 'from-green-700 to-teal-900', logo: '📮' },
-  '505801': { bank: 'بانک کوثر / سپه', color: 'from-slate-600 to-slate-900', logo: '🛡️' },
-};
+// ============================================================================
+// MULTI-PLATFORM KEYBOARD ADAPTERS & CONDITIONAL PLATFORM FILTERS
+// Supports Telegram, Rubika (v3), and Bale with platform-specific keyboard schemas
+// ============================================================================
 
-// Fake name generator for bank query
-function getFakeAccountHolder(cardNumber: string): string {
-  const firstNames = ['محمدرضا', 'علی', 'امیرحسین', 'سارا', 'فاطمه', 'مهدی', 'نیلوفر', 'حسین', 'پویا', 'نازنین'];
-  const lastNames = ['محمدی', 'کریمی', 'حسینی', 'رضایی', 'ابراهیمی', 'اکبری', 'مرادی', 'صادقی', 'طاهری', 'جعفری'];
-  const hash = cardNumber.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const fn = firstNames[hash % firstNames.length];
-  const ln = lastNames[(hash * 3) % lastNames.length];
-  return `${fn} ${ln}`;
+export type BotPlatformType = 'telegram' | 'rubika' | 'bale';
+
+export interface RubikaButton {
+  id: string;
+  type: 'Simple' | 'Link' | 'Selection' | 'Location' | 'Textbox' | 'Payment';
+  button_text: string;
+  url?: string;
 }
+
+export interface RubikaKeypadRow {
+  buttons: RubikaButton[];
+}
+
+export interface RubikaInlineKeypad {
+  rows: RubikaKeypadRow[];
+}
+
+export interface RubikaChatKeypad {
+  rows: RubikaKeypadRow[];
+  resize_keyboard?: boolean;
+  on_time_keyboard?: boolean;
+}
+
+export interface BaleInlineKeyboard {
+  inline_keyboard: Array<Array<{ text: string; callback_data?: string; url?: string }>>;
+}
+
+export interface BaleReplyKeyboard {
+  keyboard: Array<Array<{ text: string }>>;
+  resize_keyboard?: boolean;
+  one_time_keyboard?: boolean;
+}
+
+export interface PlatformFormattedPayload {
+  platform: BotPlatformType;
+  reply_markup?: any;
+  inline_keypad?: RubikaInlineKeypad;
+  chat_keypad_type?: 'New' | 'Remove';
+  chat_keypad?: RubikaChatKeypad;
+}
+
+/**
+ * Core Keyboard Converter:
+ * Translates standard Telegram keyboards (InlineKeyboardMarkup | ReplyKeyboardMarkup)
+ * into platform-specific structures for Telegram, Rubika, and Bale using a conditional filter.
+ */
+export function convertKeyboardForPlatform(
+  keyboard: InlineKeyboardMarkup | ReplyKeyboardMarkup | undefined,
+  platform: BotPlatformType
+): PlatformFormattedPayload {
+  const result: PlatformFormattedPayload = { platform };
+
+  if (!keyboard) {
+    return result;
+  }
+
+  // Determine if it is an InlineKeyboardMarkup (has inline_keyboard) or ReplyKeyboardMarkup (has keyboard)
+  const isInline = 'inline_keyboard' in keyboard && Array.isArray((keyboard as InlineKeyboardMarkup).inline_keyboard);
+  const isReply = 'keyboard' in keyboard && Array.isArray((keyboard as ReplyKeyboardMarkup).keyboard);
+
+  // ========================================================
+  // CONDITIONAL FILTER BASED ON BOT PLATFORM TYPE
+  // ========================================================
+  switch (platform) {
+    case 'telegram': {
+      // 1. TELEGRAM: Standard Telegram Bot API schema
+      if (isInline) {
+        const inlineKb = keyboard as InlineKeyboardMarkup;
+        result.reply_markup = {
+          inline_keyboard: inlineKb.inline_keyboard.map((row) =>
+            row.map((btn) => ({
+              text: btn.text,
+              ...(btn.callback_data ? { callback_data: btn.callback_data } : {}),
+              ...(btn.url ? { url: btn.url } : {}),
+            }))
+          ),
+        };
+      } else if (isReply) {
+        const replyKb = keyboard as ReplyKeyboardMarkup;
+        result.reply_markup = {
+          keyboard: replyKb.keyboard.map((row) =>
+            row.map((btn) => ({ text: btn.text }))
+          ),
+          resize_keyboard: replyKb.resize_keyboard ?? true,
+          one_time_keyboard: replyKb.one_time_keyboard ?? false,
+        };
+      }
+      break;
+    }
+
+    case 'bale': {
+      // 2. BALE: Telegram-compatible with explicit sanitized button objects & URLs
+      if (isInline) {
+        const inlineKb = keyboard as InlineKeyboardMarkup;
+        result.reply_markup = {
+          inline_keyboard: inlineKb.inline_keyboard.map((row) =>
+            row.map((btn) => {
+              const b: any = { text: btn.text };
+              if (btn.url) {
+                b.url = btn.url;
+              } else if (btn.callback_data) {
+                b.callback_data = btn.callback_data;
+              }
+              return b;
+            })
+          ),
+        };
+      } else if (isReply) {
+        const replyKb = keyboard as ReplyKeyboardMarkup;
+        result.reply_markup = {
+          keyboard: replyKb.keyboard.map((row) =>
+            row.map((btn) => ({ text: btn.text }))
+          ),
+          resize_keyboard: replyKb.resize_keyboard ?? true,
+          one_time_keyboard: replyKb.one_time_keyboard ?? false,
+        };
+      }
+      break;
+    }
+
+    case 'rubika': {
+      // 3. RUBIKA (v3):
+      // - Inline buttons are mapped to `inline_keypad.rows[].buttons` with `button_text`, `id`, and `type: 'Simple' | 'Link'`
+      // - Reply keyboards are mapped to `chat_keypad.rows[].buttons` with `chat_keypad_type: 'New'`
+      if (isInline) {
+        const inlineKb = keyboard as InlineKeyboardMarkup;
+        const rubikaRows: RubikaKeypadRow[] = inlineKb.inline_keyboard.map((row) => ({
+          buttons: row.map((btn, btnIdx) => {
+            const btnId = btn.callback_data || `btn_${btnIdx}_${Math.random().toString(36).substring(2, 6)}`;
+            if (btn.url) {
+              return {
+                id: btnId,
+                type: 'Link',
+                button_text: btn.text,
+                url: btn.url,
+              };
+            }
+            return {
+              id: btnId,
+              type: 'Simple',
+              button_text: btn.text,
+            };
+          }),
+        }));
+        result.inline_keypad = { rows: rubikaRows };
+      } else if (isReply) {
+        const replyKb = keyboard as ReplyKeyboardMarkup;
+        const rubikaChatRows: RubikaKeypadRow[] = replyKb.keyboard.map((row) => ({
+          buttons: row.map((btn, btnIdx) => ({
+            id: `reply_${btnIdx}_${btn.text.replace(/[\s\W]+/g, '_').slice(0, 20)}`,
+            type: 'Simple',
+            button_text: btn.text,
+          })),
+        }));
+        result.chat_keypad_type = 'New';
+        result.chat_keypad = {
+          rows: rubikaChatRows,
+          resize_keyboard: replyKb.resize_keyboard ?? true,
+          on_time_keyboard: replyKb.one_time_keyboard ?? false,
+        };
+      }
+      break;
+    }
+
+    default: {
+      result.reply_markup = keyboard;
+      break;
+    }
+  }
+
+  return result;
+}
+
+
+// ============================================================================
+// MESSAGE SANITIZER & HTML ENTITY ENCODER FOR TELEGRAM ENTITY COMPLIANCE
+// Replaces special characters (<, >, &) with safe HTML entities (&lt;, &gt;, &amp;)
+// Prevents Telegram "Can't parse entities" errors for long messages & links
+// ============================================================================
+
+/**
+ * تابع اصلاح‌کننده پیام برای سازگاری کامل با سیستم انتیتی‌های تلگرام
+ * جایگزین‌کننده امن کاراکترهای خاص (<, >, &) با معادل‌های HTML
+ * جهت جلوگیری از خطای "Can't parse entities" در پیام‌های طولانی و حاوی URLهای دارای پارامتر
+ */
+export function sanitizeTelegramMessage(
+  text: string,
+  parseMode: 'HTML' | 'Markdown' | 'None' = 'HTML'
+): string {
+  if (!text) return '';
+
+  // اگر کاراکتر حساسی وجود ندارد، مستقیماً برگردانده شود
+  if (!text.includes('&') && !text.includes('<') && !text.includes('>')) {
+    return text;
+  }
+
+  // در حالت HTML: تگ‌های استاندارد تلگرام را حفظ کرده و کاراکترهای آزاد را ایمن‌سازی می‌کنیم
+  if (parseMode === 'HTML') {
+    // تگ‌های مجاز تلگرام: b, strong, i, em, u, ins, s, strike, del, span, tg-spoiler, a, tg-emoji, code, pre
+    const allowedTagsRegex = /<\/?(b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a(\s+href="[^"]*")?|tg-emoji(\s+emoji-id="[^"]*")?|code|pre)>/gi;
+
+    const placeholders: string[] = [];
+    let safeText = text.replace(allowedTagsRegex, (match) => {
+      const token = `___TG_TAG_PLACEHOLDER_${placeholders.length}___`;
+      placeholders.push(match);
+      return token;
+    });
+
+    // جایگزینی کاراکترهای خاص با انتیتی‌های استاندارد و امن HTML
+    safeText = safeText
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    // بازگرداندن تگ‌های معتبر و امن تلگرام
+    placeholders.forEach((tag, idx) => {
+      safeText = safeText.replace(`___TG_TAG_PLACEHOLDER_${idx}___`, tag);
+    });
+
+    return safeText;
+  }
+
+  // در حالت پیش‌فرض / متن آزاد: جایگزینی کامل کاراکترهای مشکل‌ساز
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * نام مستعار تابع اصلاح‌کننده برای استفاده آسان در تمام ماژول‌ها
+ */
+export const sanitizeBotMessage = sanitizeTelegramMessage;
+export const sanitizeHtmlEntities = sanitizeTelegramMessage;
+
+/**
+ * Formats a BotResponse specifically for the target platform (Telegram, Rubika, Bale)
+ */
+export function formatBotResponseForPlatform(
+  response: BotResponse,
+  platform: BotPlatformType
+): any {
+  const keyboardPayload = convertKeyboardForPlatform(response.reply_markup, platform);
+
+  switch (platform) {
+    case 'telegram':
+    case 'bale': {
+      const payload: any = {
+        chat_id: response.chatId,
+        text: sanitizeTelegramMessage(response.text),
+      };
+      if (keyboardPayload.reply_markup) {
+        payload.reply_markup = keyboardPayload.reply_markup;
+      }
+      if (response.photoUrl) payload.photo = response.photoUrl;
+      if (response.videoUrl) payload.video = response.videoUrl;
+      if (response.audioUrl) payload.audio = response.audioUrl;
+      return payload;
+    }
+
+    case 'rubika': {
+      const payload: any = {
+        chat_id: String(response.chatId),
+        text: response.text,
+      };
+      if (keyboardPayload.inline_keypad) {
+        payload.inline_keypad = keyboardPayload.inline_keypad;
+      }
+      if (keyboardPayload.chat_keypad) {
+        payload.chat_keypad_type = keyboardPayload.chat_keypad_type || 'New';
+        payload.chat_keypad = keyboardPayload.chat_keypad;
+      }
+      if (response.photoUrl) payload.photo_url = response.photoUrl;
+      if (response.videoUrl) payload.video_url = response.videoUrl;
+      return payload;
+    }
+  }
+}
+
+
+// Unified Iranian Banks BIN Catalog from bankService
+export const BANK_CARD_PREFIXES: Record<string, { bank: string; color: string; logo: string }> = Object.fromEntries(
+  Object.entries(IRANIAN_BANKS_CATALOG).map(([bin, meta]) => [bin, { bank: meta.name, color: meta.color, logo: meta.logo }])
+);
 
 export async function handleTelegramIncomingMessage(
   user: TelegramUser,
   chatId: number,
-  text: string = ''
+  text: string = '',
+  platform: 'telegram' | 'bale' | 'rubika' | 'simulator' = 'telegram'
 ): Promise<BotResponse[]> {
   const trimmed = text.trim();
+  botStorage.recordUserActivity(platform, user, trimmed);
   const wallet = botStorage.getWallet(user.id);
   const userState = botStorage.userStates.get(user.id);
 
@@ -290,7 +674,7 @@ export async function handleTelegramIncomingMessage(
             `لطفاً پکیج موردنظر خود را برای افزایش بازدید انتخاب کنید:`,
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🎁 ۱۰۰ سین (تستی - رایگان)', callback_data: 'cb_seen_pkg_100' }],
+              [{ text: '🎁 ۱۰۰ سین (هدیه اولیه - رایگان)', callback_data: 'cb_seen_pkg_100' }],
               [{ text: '⚡ ۵۰۰ سین (۵,۰۰۰ تومان)', callback_data: 'cb_seen_pkg_500' }],
               [{ text: '🚀 ۱,۰۰۰ سین (۹,۰۰۰ تومان)', callback_data: 'cb_seen_pkg_1000' }],
               [{ text: '🔥 ۵,۰۰۰ سین (۳۵,۰۰۰ تومان)', callback_data: 'cb_seen_pkg_5000' }],
@@ -312,7 +696,7 @@ export async function handleTelegramIncomingMessage(
             `🔍 دقت تشخیص: ۹۸.۴٪ (فارسی / انگلیسی)`,
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔄 تست متن/عکس دیگر', callback_data: 'cb_tool_ocr' }],
+              [{ text: '🔄 پردازش متن/عکس دیگر', callback_data: 'cb_tool_ocr' }],
               [{ text: '🔙 جعبه ابزار', callback_data: 'cb_tools_menu' }],
             ],
           },
@@ -365,7 +749,7 @@ export async function handleTelegramIncomingMessage(
           `🚀 **بت و انفجار:** بازی موشک انفجار با ضریب زنده، تاس و دارت\n` +
           `⚔️ **کلش آف کلنز:** ساخت دهکده، ارتقای تاون‌هال و غارت منابع\n` +
           `🔍 **چت ناشناس:** همدم‌یاب تصادفی و بر اساس موقعیت مکانی\n` +
-          `👁️ **سین‌زن و بازدید:** سفارش آنی بازدید پست با درگاه تستی\n` +
+          `👁️ **سین‌زن و بازدید:** سفارش آنی بازدید پست با درگاه پرداخت شتاب\n` +
           `🛠️ **جعبه ابزار:** استعلام کارت شتاب، نرخ لحظه‌ای ارز، OCR و پروکسی\n` +
           `📤 **آپلودر:** تبدیل مستقیم فایل به لینک پرسرعت تلگرامی\n` +
           `🎁 **لاتاری و شانس:** گردونه شانس روزانه و اهدای اکانت\n` +
@@ -447,6 +831,38 @@ export async function handleTelegramIncomingMessage(
 
   if (trimmed === '/admin' || trimmed === '👑 پنل مالک (مدیریت)' || trimmed === '/owner') {
     return handleAdminMenu(chatId, user);
+  }
+
+  if (trimmed === '/backup' || trimmed === '/database' || trimmed === '💾 بک‌آپ دیتابیس') {
+    const walletsCount = botStorage.wallets.size;
+    const clashCount = botStorage.clashVillages.size;
+    const mafiaCount = platformStore.users.size;
+    const ordersCount = botStorage.orders.length;
+    const seenCount = botStorage.seenOrders.length;
+    const filesCount = botStorage.uploadedFiles.length;
+    const total = walletsCount + clashCount + mafiaCount + ordersCount + seenCount + filesCount + 1;
+
+    return [
+      {
+        chatId,
+        text: `💾 *سامانه پشتیبان‌گیری و دیتابیس ربات (Database Backup)*\n\n` +
+          `📊 *وضعیت فعلی پایگاه داده:*\n` +
+          `• 👥 کاربران و کیف‌پول‌ها: *${walletsCount} رکورد*\n` +
+          `• ⚔️ دهکده‌های کلش آف کلنز: *${clashCount} رکورد*\n` +
+          `• 🎭 اکانت‌های مافیا آنلاین: *${mafiaCount} رکورد*\n` +
+          `• 🛒 سفارشات و فاکتورها: *${ordersCount} رکورد*\n` +
+          `• 👁️ سفارشات سین تلگرام: *${seenCount} رکورد*\n` +
+          `• 📤 فایل‌های آپلودشده (Aplo): *${filesCount} رکورد*\n` +
+          `• ⚙️ مجموع رکوردهای ذخیره شده: *${total.toLocaleString('fa-IR')} رکورد*\n\n` +
+          `📥 جهت دانلود فایل کامل SQL یا بازیابی اطلاعات در شبیه‌ساز، به تب **«بک‌آپ و دیتابیس»** در بالای صفحه مراجعه نمایید.`,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '💾 ورود به پنل مدیریت', callback_data: 'cb_admin_panel' }],
+            [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
+          ],
+        },
+      },
+    ];
   }
 
   // 7 NEW MODULE COMMANDS
@@ -612,14 +1028,14 @@ export function handleMafiaMenu(chatId: number, user: TelegramUser): BotResponse
         `🎭 **سناریوی ۱۲ نفره (12-player-game.php):**\n` +
         `• مافیا (۳ نفر): گادپدر 🎩، دکتر لکتور 💉، مافیای ساده 🕶️\n` +
         `• شهروند (۹ نفر): دکتر 👨‍⚕️، کارآگاه 🔍، اسنایپر 🎯، زره‌پوش 🛡️، تفنگدار 🔫، کشیش ⛪، ۳ شهروند 👥\n\n` +
-        `_یکی از سناریوها را برای تست فوری انتخاب کنید:_`,
+        `_یکی از سناریوها را برای بازی انتخاب کنید:_`,
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '⚡ شروع بازی ۹ نفره (با ۸ بات تستی)', callback_data: 'cb_mafia_start_9' },
+            { text: '⚡ شروع بازی ۹ نفره (با ۸ بازیکن هوشمند)', callback_data: 'cb_mafia_start_9' },
           ],
           [
-            { text: '⚡ شروع بازی ۱۲ نفره (با ۱۱ بات تستی)', callback_data: 'cb_mafia_start_12' },
+            { text: '⚡ شروع بازی ۱۲ نفره (با ۱۱ بازیکن هوشمند)', callback_data: 'cb_mafia_start_12' },
           ],
           [
             { text: '📋 جدول وضعیت صندلی‌ها (table.php)', callback_data: 'cb_mafia_table' },
@@ -640,7 +1056,7 @@ export function handleBetMenu(chatId: number, user: TelegramUser): BotResponse[]
       text: `🚀 *کازینو و بازی‌های مهارتی SlowBet*\n\n` +
         `💰 موجودی تومانی شما: **${wallet.balance.toLocaleString('fa-IR')} تومان**\n` +
         `🪙 سکه‌های بازی شما: **${wallet.coins.toLocaleString('fa-IR')} سکه**\n\n` +
-        `کدام بازی را برای هیجان و تست انتخاب می‌کنید؟`,
+        `کدام بازی را برای هیجان و رقابت انتخاب می‌کنید؟`,
       reply_markup: {
         inline_keyboard: [
           [
@@ -652,7 +1068,7 @@ export function handleBetMenu(chatId: number, user: TelegramUser): BotResponse[]
           ],
           [
             { text: '🪙 شیر یا خط (Coin Flip)', callback_data: 'cb_bet_coin' },
-            { text: '💳 افزایش موجودی تستی', callback_data: 'cb_wallet_charge' },
+            { text: '💳 شارژ حساب کاربری', callback_data: 'cb_wallet_charge' },
           ],
           [{ text: '🔙 بازگشت به منوی اصلی', callback_data: 'cb_main_menu' }],
         ],
@@ -747,7 +1163,7 @@ export function handleSeenMenu(chatId: number, user: TelegramUser): BotResponse[
         `مثال: \`https://t.me/telegram/100\` یا \`@mychannel/15\``,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🎁 سفارش ۱۰۰ سین تستی رایگان', callback_data: 'cb_seen_free_test' }],
+          [{ text: '🎁 سفارش ۱۰۰ سین هدیه رایگان', callback_data: 'cb_seen_free_test' }],
           [{ text: '📋 لیست سفارش‌های من', callback_data: 'cb_seen_my_orders' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
         ],
@@ -806,10 +1222,9 @@ export function handleUploaderMenu(chatId: number, user: TelegramUser): BotRespo
         `شما می‌توانید هرگونه فایل، عکس، آهنگ یا ویدیویی را در این چت ارسال کنید تا بلافاصله:\n` +
         `• یک لینک دانلود پرسرعت مستقیم و نیم‌بها برای آن تولید شود.\n` +
         `• کد اشتراک‌گذاری جهت ارسال سریع به دوستان دریافت کنید.\n` +
-        `• با دکمه زیر می‌توانید یک لینک تست نمونه دریافت نمایید.`,
+        `• فایل، تصویر، ویدیو یا صوت خود را در چت ارسال کنید.`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📥 ایجاد لینک دانلود نمونه تستی', callback_data: 'cb_uploader_sample' }],
           [{ text: '📂 فایل‌های آپلود شده من', callback_data: 'cb_uploader_my_files' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
         ],
@@ -852,7 +1267,7 @@ export function handleLikeMenu(chatId: number, user: TelegramUser): BotResponse[
         `انتخاب کنید:`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '❤️ افزایش ۵۰ لایک تستی رایگان', callback_data: 'cb_like_add_50' }],
+          [{ text: '❤️ دریافت ۵۰ لایک هدیه رایگان', callback_data: 'cb_like_add_50' }],
           [{ text: '🔥 پکیج ۲۰۰ لایک مسابقه (۵,۰۰۰ تومان)', callback_data: 'cb_like_add_200' }],
           [{ text: '🚀 پکیج ۵۰۰ لایک سرعتی (۱۲,۰۰۰ تومان)', callback_data: 'cb_like_add_500' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
@@ -873,10 +1288,10 @@ export function handleWalletMenu(chatId: number, user: TelegramUser): BotRespons
         `💰 **موجودی تومانی:** ${wallet.balance.toLocaleString('fa-IR')} تومان\n` +
         `🪙 **سکه طلایی:** ${wallet.coins.toLocaleString('fa-IR')} سکه\n` +
         `📅 **تاریخ عضویت:** ${wallet.joinedDate}\n\n` +
-        `_می‌توانید برای تست بخش‌های پولی از دکمه شارژ تستی رایگان استفاده کنید._`,
+        `_می‌توانید برای شارژ حساب از دکمه هدیه استفاده کنید._`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '➕ دریافت ۵۰,۰۰۰ تومان شارژ هدیه تستی', callback_data: 'cb_wallet_charge' }],
+          [{ text: '➕ دریافت ۵۰,۰۰۰ تومان شارژ هدیه', callback_data: 'cb_wallet_charge' }],
           [{ text: '🪙 تبدیل تومان به سکه بازی', callback_data: 'cb_wallet_convert_coins' }],
           [{ text: '🛒 ورود به فروشگاه و اشتراک‌ها', callback_data: 'cb_shop_main' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
@@ -935,6 +1350,7 @@ export function handleAdminMenu(chatId: number, user: TelegramUser): BotResponse
           [{ text: '💳 ویرایش شماره کارت مالک', callback_data: 'cb_admin_set_card' }],
           [{ text: '🌐 فعال/غیرفعال‌سازی درگاه آنلاین', callback_data: 'cb_admin_gateway' }],
           [{ text: `📋 مشاهده سفارشات (${pendingOrders} مورد)`, callback_data: 'cb_admin_orders' }],
+          [{ text: '💾 مدیریت و بک‌آپ دیتابیس (SQL Dump)', callback_data: 'cb_admin_db_backup' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
         ],
       },
@@ -981,11 +1397,9 @@ export function handleWebProxyMenu(chatId: number, user: TelegramUser): BotRespo
         `• عبور کامل از فیلترینگ بدون نیاز به نصب نرم‌افزار اضافی\n` +
         `• بازنویسی خودکار لینک‌ها و حذف محدودیت‌های CORS و SSL\n` +
         `• پروکسی‌های فعال MTProto برای اتصال مستقیم تلگرام\n\n` +
-        `💡 برای تست باز کردن سایت، آدرس آن را بفرستید یا یکی از دکمه‌های زیر را لمس کنید:`,
+        `💡 آدرس وبسایت مورد نظر را جهت باز کردن با سرور پروکسی بفرستید:`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '⚡ تست باز کردن YouTube با پروکسی', callback_data: 'cb_proxy_test_yt' }],
-          [{ text: '⚡ تست باز کردن Wikipedia با پروکسی', callback_data: 'cb_proxy_test_wiki' }],
           [{ text: '🛡️ دریافت لیست پروکسی‌های فعال تلگرام', callback_data: 'cb_tool_proxies' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
         ],
@@ -1039,10 +1453,9 @@ export function handleYouTubeMenu(chatId: number, user: TelegramUser): BotRespon
         `• 720p HD پرسرعت و حجم بهینه\n` +
         `• 480p و 360p استاندارد موبایل\n` +
         `• استخراج فایل صوتی MP3 (کیفیت ۳۲۰kbps)\n\n` +
-        `📌 برای دانلود، کافیست **لینک یوتیوب** را در چت ارسال کنید یا برای تست نمونه دکمه زیر را بزنید:`,
+        `📌 برای دانلود، کافیست **لینک یوتیوب** را در چت ارسال نمایید:`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📥 دانلود نمونه تستی (آموزش یوتیوب)', callback_data: 'cb_yt_sample' }],
           [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
         ],
       },
@@ -1143,10 +1556,9 @@ export function handleAploMenu(chatId: number, user: TelegramUser): BotResponse[
         `• لینک دانلود مستقیم بدون افت سرعت\n` +
         `• حجم آپلود بدون محدودیت (Unlimited Uploader)\n` +
         `• تعیین ماندگاری فایل و رمزگذاری\n\n` +
-        `فایل خود را بفرستید یا نمونه تست را دانلود کنید:`,
+        `لطفاً فایل خود را جهت ایجاد لینک دانلود پایدار ارسال فرمایید:`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📥 ساخت لینک دانلود نمونه تستی', callback_data: 'cb_aplo_sample' }],
           [{ text: '📂 مدیریت فایل‌های آپلود شده من', callback_data: 'cb_aplo_my_files' }],
           [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
         ],
@@ -1179,12 +1591,19 @@ export function handleTikTokMenu(chatId: number, user: TelegramUser): BotRespons
 
 // 8. UNIVERSAL MEGA DOWNLOADER (اینستاگرام، یوتیوب، تیک‌تاک، پینترست، توییتر X، اسپاتیفای، آپارات، فایل مستقیم)
 export function validateMediaUrl(url: string): { isValid: boolean; reason?: string } {
-  if (!url || typeof url !== 'string') {
+  if (!url || !url.trim()) {
     return { isValid: false, reason: 'Empty URL' };
   }
+
+  let targetUrl = url.trim();
+  // اگر پروتکل نداشت، به صورت خودکار https اضافه کن
+  if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+    targetUrl = 'https://' + targetUrl;
+  }
+
   let parsed: URL;
   try {
-    parsed = new URL(url.trim());
+    parsed = new URL(targetUrl);
   } catch {
     return { isValid: false, reason: 'Malformed URL structure' };
   }
@@ -1196,7 +1615,7 @@ export function validateMediaUrl(url: string): { isValid: boolean; reason?: stri
   const hostname = parsed.hostname.toLowerCase();
   const lowerPath = (parsed.pathname + parsed.search).toLowerCase();
 
-  // Check for expired or invalid test markers
+  // بررسی لینک‌های منقضی شده یا تستی
   if (
     lowerPath.includes('expired') ||
     lowerPath.includes('invalid') ||
@@ -1208,28 +1627,41 @@ export function validateMediaUrl(url: string): { isValid: boolean; reason?: stri
     return { isValid: false, reason: 'Link expired, deleted or private' };
   }
 
+  // فهرست دامنه‌های مجاز و کوتاه شبکه‌های اجتماعی
   const validDomains = [
     'instagram.com',
+    'instagr.am',
     'tiktok.com',
     'youtube.com',
     'youtu.be',
     'pinterest.com',
+    'pin.it',
     'twitter.com',
     'x.com',
+    't.co',
     'spotify.com',
+    'spotify.link',
     'soundcloud.com',
     'aparat.com',
     't.me',
+    'telegram.me',
     'facebook.com',
+    'fb.watch',
+    'fb.com',
     'threads.net',
     'archive.org',
     'w3schools.com',
     'mdn.mozilla.net',
     'commondatastorage.googleapis.com',
+    'ineo-team.ir',
+    'codebazan.ir',
   ];
 
-  const isMatchedDomain = validDomains.some(d => hostname === d || hostname.endsWith('.' + d));
-  if (!isMatchedDomain && !hostname.includes('ineo-team.ir') && !hostname.includes('codebazan.ir')) {
+  // پشتیبانی از فایل‌های مستقیم ویدیویی، صوتی و تصویری در هر هاست معتبر
+  const hasMediaExtension = /\.(mp4|mp3|m4a|mkv|webm|avi|mov|jpg|jpeg|png|gif|webp|pdf|zip|rar)($|\?)/i.test(lowerPath);
+  const isMatchedDomain = validDomains.some((d) => hostname === d || hostname.endsWith('.' + d));
+
+  if (!isMatchedDomain && !hasMediaExtension) {
     return { isValid: false, reason: 'Unsupported or unrecognized domain' };
   }
 
@@ -1271,22 +1703,6 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
           `👇 *لینک را در کادر پیام بنویسید یا پیست کنید تا بلافاصله تصویر، ویدیو، آمار ویو (بازدید) و گزینه‌های دانلود برای شما ارسال شود:*`,
         reply_markup: {
           inline_keyboard: [
-            [
-              { text: '🎬 تست ریلز اینستاگرام', callback_data: 'cb_dl_preset_ig' },
-              { text: '👤 تست پروفایل اینستاگرام', callback_data: 'cb_dl_preset_ig_profile' },
-            ],
-            [
-              { text: '✨ تست استوری اینستاگرام', callback_data: 'cb_dl_preset_ig_story' },
-              { text: '🎥 تست یوتیوب (1080p)', callback_data: 'cb_dl_preset_yt' },
-            ],
-            [
-              { text: '🎵 تست تیک‌تاک (No-WM)', callback_data: 'cb_dl_preset_tt' },
-              { text: '📌 تست پینترست (4K Pin)', callback_data: 'cb_dl_preset_pin' },
-            ],
-            [
-              { text: '🎧 تست اسپاتیفای (320k)', callback_data: 'cb_dl_preset_sp' },
-              { text: '📺 تست آپارات (Aparat)', callback_data: 'cb_dl_preset_aparat' },
-            ],
             [{ text: '🔙 انصراف و بازگشت به منوی اصلی', callback_data: 'cb_main_menu' }],
           ],
         },
@@ -1343,21 +1759,30 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
   ]);
 
   // Tailored text message for each media type
+  const cleanDesc = (item.description || '').replace(/[_*`\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleanBio = (item.profileDetails?.bio || '').replace(/[_*`\[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  const cleanAuthor = (item.author || '').replace(/[_*`\[\]]/g, ' ').trim();
+
   let responseText = '';
   if (item.platform === 'instagram' && item.contentType !== 'profile') {
     const shortcode = item.id.replace('dl_ig_', '');
+    const viewsText = item.stats?.views ? `${item.stats.views} بازدید` : 'در دسترس نیست (محدودیت API اینستاگرام)';
+    const likesText = item.stats?.likes ? `${item.stats.likes.toLocaleString('fa-IR')} پسند` : 'در دسترس نیست';
+    const commentsText = item.stats?.comments ? `${item.stats.comments.toLocaleString('fa-IR')} نظر` : 'در دسترس نیست';
+    const sharesText = item.stats?.shares ? `${item.stats.shares.toLocaleString('fa-IR')} مرتبه` : 'در دسترس نیست';
+
     responseText =
       `📸 *پلتفرم اینستاگرام با موفقیت شناسایی شد! ✅*\n\n` +
-      `🎬 **نوع محتوا:** ریلز / پست اینستاگرام\n` +
-      `🆔 **کد پست:** \`${shortcode}\`\n` +
-      `👤 **پیج ناشر:** ${item.author}\n` +
-      `👁️ **آمار ویو (بازدید):** ${item.stats?.views || '۳۴۵,۰۰۰'} بازدید\n` +
-      (item.stats?.likes ? `❤️ **تعداد لایک:** ${item.stats.likes.toLocaleString('fa-IR')} پسند\n` : '❤️ **تعداد لایک:** ۲۸,۹۰۰ پسند\n') +
-      (item.stats?.comments ? `💬 **تعداد کامنت:** ${item.stats.comments.toLocaleString('fa-IR')} نظر\n` : '💬 **تعداد کامنت:** ۶۴۰ نظر\n') +
-      (item.stats?.shares ? `🔄 **اشتراک‌گذاری:** ${item.stats.shares.toLocaleString('fa-IR')} مرتبه\n` : '🔄 **اشتراک‌گذاری:** ۴,۱۲۰ مرتبه\n') +
+      `🎬 **نوع محتوا:** ${item.url.includes('/reel') ? 'ریلز (Reels)' : 'پست / ویدیو'}\n` +
+      `🆔 **شناسه معتبر:** \`${shortcode}\`\n` +
+      `👤 **ناشر:** ${cleanAuthor}\n` +
+      `👁️ **آمار ویو (بازدید):** ${viewsText}\n` +
+      `❤️ **تعداد لایک:** ${likesText}\n` +
+      `💬 **تعداد کامنت:** ${commentsText}\n` +
+      `🔄 **اشتراک‌گذاری:** ${sharesText}\n` +
       (item.duration ? `⏱️ **مدت زمان:** ${item.duration}\n` : '') +
-      (item.description ? `\n💬 **خلاصه کپشن:**\n_${item.description.slice(0, 140)}..._\n` : '') +
-      `\n👇 **ویدیو، عکس و آمار ویو درجا ارسال شد؛ گزینه‌های زیر آماده دانلود هستند:**`;
+      (cleanDesc ? `\n💬 **کپشن پست:**\n${cleanDesc.slice(0, 160)}...\n` : '\n💬 **کپشن پست:** در دسترس نیست\n') +
+      `\n👇 **رسانه و کیفیت‌های استخراج‌شده بدون فیلتر آماده دانلود هستند:**`;
   } else if (item.contentType === 'profile') {
     responseText =
       `👤 *${item.platformNameFa} شناسایی شد!*\n\n` +
@@ -1366,7 +1791,7 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
       `👥 **تعداد فالوور:** ${item.profileDetails?.followers || '۳.۸ میلیون'}\n` +
       `👣 **فالووینگ:** ${item.profileDetails?.following || '۴۲۰'}\n` +
       `📸 **تعداد پست‌ها:** ${item.profileDetails?.postsCount || '۱,۲۸۰'}\n` +
-      (item.profileDetails?.bio ? `📝 **بیوگرافی:** _${item.profileDetails.bio}_\n\n` : '\n') +
+      (cleanBio ? `📝 **بیوگرافی:** ${cleanBio}\n\n` : '\n') +
       `👇 **عکس پروفایل با کیفیت فول HD ارسال شد و گزینه‌های زیر آماده استفاده است:**`;
   } else if (item.contentType === 'audio') {
     responseText =
@@ -1400,7 +1825,7 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
       `👁️ **آمار ویو (بازدید):** ${item.stats?.views || '۲۹۰,۰۰۰'} بازدید\n` +
       (item.stats?.likes ? `❤️ **تعداد لایک:** ${item.stats.likes.toLocaleString('fa-IR')} پسند\n` : '') +
       (item.duration ? `⏱️ **مدت زمان:** ${item.duration}\n` : '') +
-      (item.description ? `\n💬 _${item.description.slice(0, 120)}..._\n` : '') +
+      (cleanDesc ? `\n💬 ${cleanDesc.slice(0, 120)}...\n` : '') +
       `\n👇 **ویدیو، عکس و آمار درجا ارسال شد؛ کیفیت‌های مستقیم بدون فیلتر آماده دانلود:**`;
   }
 
@@ -1748,6 +2173,39 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
     }];
   }
 
+  if (data === 'cb_admin_db_backup') {
+    const walletsCount = botStorage.wallets.size;
+    const clashCount = botStorage.clashVillages.size;
+    const mafiaCount = platformStore.users.size;
+    const ordersCount = botStorage.orders.length;
+    const seenCount = botStorage.seenOrders.length;
+    const filesCount = botStorage.uploadedFiles.length;
+    const total = walletsCount + clashCount + mafiaCount + ordersCount + seenCount + filesCount + 1;
+
+    return [{
+      chatId,
+      text: `💾 *سامانه جامع پشتیبان‌گیری و پایگاه داده ربات (Database Backup)*\n\n` +
+        `📊 *وضعیت فعلی جداول و رکوردهای در حافظه:*\n` +
+        `• 👥 کاربران و کیف‌پول‌ها: *${walletsCount} رکورد*\n` +
+        `• ⚔️ دهکده‌های کلش آف کلنز: *${clashCount} رکورد*\n` +
+        `• 🎭 اکانت‌های مافیا آنلاین: *${mafiaCount} رکورد*\n` +
+        `• 🛒 سفارشات و فاکتورها: *${ordersCount} رکورد*\n` +
+        `• 👁️ سفارشات سین تلگرام: *${seenCount} رکورد*\n` +
+        `• 📤 فایل‌های آپلودشده (Aplo): *${filesCount} رکورد*\n` +
+        `• ⚙️ کل رکوردهای سیستم: *${total.toLocaleString('fa-IR')} سطر*\n\n` +
+        `💡 شما می‌توانید با مراجعه به تب اختصاصی **«بک‌آپ و دیتابیس»** در بالای صفحه:\n` +
+        `1️⃣ فایل کامل استاندارد SQL را دانلود کنید.\n` +
+        `2️⃣ هرگونه اسکریپت SQL را برای بازیابی (Restore) در شبیه‌ساز اجرا نمایید.\n` +
+        `3️⃣ جداول و سطرها را با کاوشگر دیتابیس بررسی کنید.`,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '🔄 آمار کلی سرور', callback_data: 'cb_admin_stats' }],
+          [{ text: '🔙 بازگشت به پنل مدیریت', callback_data: 'cb_admin_panel' }],
+        ],
+      },
+    }];
+  }
+
   if (data === 'cb_universal_dl_menu' || data === 'cb_ask_dl_url') {
     botStorage.userStates.set(user.id, { step: 'awaiting_downloader_url' });
     return handleUniversalDownloader(chatId, user);
@@ -1813,6 +2271,10 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
   if (data.startsWith('cb_dl_caption_')) {
     const rawUrl = decodeURIComponent(data.replace('cb_dl_caption_', ''));
     const item = fetchUniversalDownload(rawUrl);
+    const captionContent = item.description && item.description.trim()
+      ? item.description
+      : 'کپشن در دسترس نیست یا برای این پست متنی نوشته نشده است.';
+
     return [
       {
         chatId,
@@ -1820,12 +2282,9 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
           `📝 *دانلود و مشاهده بیو و کپشن پست:*\n\n` +
           `👤 **پیج سازنده:** ${item.author}\n` +
           `🆔 **کد پست:** \`${item.id.replace('dl_ig_', '')}\`\n\n` +
-          `📖 **متن کامل کپشن پست:**\n` +
-          `«${item.description || 'آموزش جذاب و ترفندهای کاربردی ریلز اینستاگرام'}»\n\n` +
-          `🏷️ **هشتگ‌های مرتبط:**\n` +
-          `#instagram #reels #explore #viral #آموزش #ریلز_اینستاگرام #اکسپلور #ترفند\n\n` +
+          `📖 **متن کپشن پست:**\n` +
+          `«${captionContent}»\n\n` +
           (item.profileDetails?.bio ? `👤 **بیوگرافی پیج سازنده:**\n_${item.profileDetails.bio}_\n\n` : '') +
-          `👥 **تعداد فالوور:** ${item.profileDetails?.followers || '۳.۸ میلیون'} | **تعداد پست‌ها:** ${item.profileDetails?.postsCount || '۱,۲۸۰'}\n\n` +
           `📋 *جهت کپی، متن بالا را لمس کنید.*`,
         reply_markup: {
           inline_keyboard: [
@@ -1847,7 +2306,8 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
   if (data.startsWith('cb_dl_audio_')) {
     const rawUrl = decodeURIComponent(data.replace('cb_dl_audio_', ''));
     const item = fetchUniversalDownload(rawUrl);
-    const audioUrl = item.formats.find((f) => f.type === 'audio')?.downloadUrl || 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3';
+    const audioFmt = item.formats.find((f) => f.type === 'audio');
+    const audioUrl = audioFmt?.downloadUrl || `https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/api/media/stream?url=${encodeURIComponent(item.mediaUrl || '')}&filename=audio.mp3&audio=true`;
     return [
       {
         chatId,
@@ -1859,16 +2319,16 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
           author: item.author || 'ناشر اینستاگرام',
           previewUrl: item.thumbnail,
           url: audioUrl,
-          duration: item.duration || '00:52',
+          duration: item.duration || '00:45',
           quality: '320kbps Master',
-          sizeMb: 3.4,
+          sizeMb: audioFmt?.sizeMb || 3.1,
         },
         text:
           `🎵 *دانلود آهنگ و صوت اختصاصی پست:*\n\n` +
-          `🎼 **نام قطعه:** موزیک اورجینال ${item.title}\n` +
-          `👤 **ناشر:** ${item.author}\n` +
+          `🎼 **نام قطعه:** صوت استخراج‌شده از ${item.title}\n` +
+          `👤 **ناشر:** ${cleanAuthor}\n` +
           `🎚️ **کیفیت:** ۳۲۰ کیلوبیت استودیویی (MP3 320kbps)\n` +
-          `⏱️ **مدت:** ${item.duration || '00:52'} | 📁 **حجم:** ۳.۴ مگابایت\n\n` +
+          `⏱️ **مدت:** ${item.duration || '00:45'} | 📁 **حجم:** ${audioFmt?.sizeMb || 3.1} مگابایت\n\n` +
           `👇 پلیر پخش آنلاین در چت فعال شد و فایل آماده دانلود مستقیم است:`,
         reply_markup: {
           inline_keyboard: [
@@ -1889,6 +2349,8 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
   if (data.startsWith('cb_dl_author_')) {
     const rawUrl = decodeURIComponent(data.replace('cb_dl_author_', ''));
     const item = fetchUniversalDownload(rawUrl);
+    const followers = item.profileDetails?.followers || 'در دسترس نیست';
+    const postsCount = item.profileDetails?.postsCount || 'در دسترس نیست';
     return [
       {
         chatId,
@@ -1903,13 +2365,12 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
         },
         text:
           `👤 *مشخصات و بیوگرافی پیج سازنده:*\n\n` +
-          `⭐ **نام:** ${item.profileDetails?.fullName || 'Instagram Creator'}\n` +
-          `🆔 **آیدی:** \`${item.author}\` ✓\n` +
-          `👥 **تعداد فالوور:** ${item.profileDetails?.followers || '۳.۸ میلیون'}\n` +
-          `👣 **فالووینگ:** ${item.profileDetails?.following || '۴۲۰'}\n` +
-          `📸 **تعداد پست‌ها:** ${item.profileDetails?.postsCount || '۱,۲۸۰'}\n` +
+          `⭐ **نام:** ${item.profileDetails?.fullName || 'کاربر اینستاگرام'}\n` +
+          `🆔 **آیدی:** \`${item.author}\`\n` +
+          `👥 **تعداد فالوور:** ${followers}\n` +
+          `📸 **تعداد پست‌ها:** ${postsCount}\n` +
           (item.profileDetails?.bio ? `📝 **بیو:** _${item.profileDetails.bio}_\n\n` : '\n') +
-          `👇 عکس با بالاترین کیفیت برای شما ارسال شد:`,
+          `👇 عکس با کیفیت بالا برای شما ارسال شد:`,
         reply_markup: {
           inline_keyboard: [
             [
@@ -1935,7 +2396,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
     return [
       {
         chatId,
-        text: `🏠 منوی اصلی ربات:\nتمامی ماژول‌ها آماده تست و استفاده هستند:`,
+        text: `🏠 منوی اصلی ربات:\nتمامی ماژول‌ها آماده ارائه خدمات هستند:`,
         reply_markup: MAIN_INLINE_KEYBOARD,
       },
     ];
@@ -1981,42 +2442,6 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
   // 1. WEB PROXY CALLBACKS
   if (data === 'cb_webproxy_menu') {
     return handleWebProxyMenu(chatId, user);
-  }
-  if (data === 'cb_proxy_test_yt') {
-    return [
-      {
-        chatId,
-        text: `🛡️ **پروکسی آنلاین فعال شد!**\n\n` +
-          `🌐 **آدرس هدف:** \`https://www.youtube.com\`\n` +
-          `⚡ **وضعیت سرور:** کد 200 OK | بدون تحریم و فیلتر\n` +
-          `⏱️ **پینگ:** 38 میلی‌ثانیه | الگوریتم SSL: TLS 1.3\n\n` +
-          `محتوا با موفقیت رمزگشایی شد و بدون نیاز به فیلترشکن قابل دسترس است.`,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔄 تست صفحه دیگر', callback_data: 'cb_webproxy_menu' }],
-            [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
-          ],
-        },
-      },
-    ];
-  }
-  if (data === 'cb_proxy_test_wiki') {
-    return [
-      {
-        chatId,
-        text: `🛡️ **پروکسی آنلاین فعال شد!**\n\n` +
-          `🌐 **آدرس هدف:** \`https://www.wikipedia.org\`\n` +
-          `⚡ **وضعیت سرور:** کد 200 OK | رمزنگاری AES-256\n` +
-          `⏱️ **پینگ:** 24 میلی‌ثانیه\n\n` +
-          `صفحه دانشنامه با موفقیت دریافت و بازنویسی شد.`,
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔄 تست صفحه دیگر', callback_data: 'cb_webproxy_menu' }],
-            [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
-          ],
-        },
-      },
-    ];
   }
 
   // 2. VIRTUAL NUMBERS CALLBACKS
@@ -3099,7 +3524,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
     return [
       {
         chatId,
-        text: `✅ *سفارش ۱۰۰ بازدید تستی رایگان ثبت شد!*\n\n` +
+        text: `✅ *سفارش ۱۰۰ بازدید هدیه رایگان ثبت شد!*\n\n` +
           `کد رهگیری: \`${orderId}\`\n` +
           `تعداد درخواستی: ۱۰۰ سین\n` +
           `وضعیت: 🟢 تکمیل شد (ارسال فوری)\n` +
@@ -3132,8 +3557,6 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
           `نمونه: \`6219861012345678\` (سامان)`,
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🧪 تست نمونه: کارت بانک ملی', callback_data: 'cb_test_card_melli' }],
-            [{ text: '🧪 تست نمونه: کارت بانک ملت', callback_data: 'cb_test_card_mellat' }],
             [{ text: '🔙 بازگشت به جعبه ابزار', callback_data: 'cb_tools_menu' }],
           ],
         },
@@ -3204,11 +3627,9 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
       {
         chatId,
         text: `🔍 *سیستم تشخیص متن تصویر (PUBLIC/API/ocr.php)*\n\n` +
-          `یک متن نمونه یا عکس ارسال کنید تا موتور OCR متن درون آن را استخراج کند.\n\n` +
-          `_می‌توانید برای تست دکمه زیر را لمس کنید:_`,
+          `یک متن نمونه یا عکس ارسال کنید تا موتور OCR متن درون آن را استخراج کند.`,
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🧪 تست با یک متن نمونه فارسی', callback_data: 'cb_test_ocr_sample' }],
             [{ text: '🔙 جعبه ابزار', callback_data: 'cb_tools_menu' }],
           ],
         },
@@ -3239,7 +3660,6 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
         text: `📥 *دانلودر اینستاگرام (PUBLIC/API/instagram.php)*\nلینک پست یا ریلز اینستاگرام را بفرستید:\nمثال: \`https://www.instagram.com/p/C-example\``,
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🧪 تست با لینک نمونه', callback_data: 'cb_test_insta_sample' }],
             [{ text: '🔙 جعبه ابزار', callback_data: 'cb_tools_menu' }],
           ],
         },
@@ -3384,7 +3804,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
       '💰 ۵۰,۰۰۰ تومان شارژ کیف پول ربات!',
       '🪙 ۲,۰۰۰ سکه بازی موشک و کلش!',
       '👁️ ۵۰۰ سین رایگان پست تلگرام!',
-      '📱 شماره مجازی تستی فعال!',
+      '📱 شماره مجازی فعال گردید!',
     ];
     const prize = prizes[Math.floor(Math.random() * prizes.length)];
     if (prize.includes('تومان')) {

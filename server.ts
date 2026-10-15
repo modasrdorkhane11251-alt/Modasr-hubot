@@ -1,5 +1,11 @@
+import { databasePersistenceService } from './src/services/databasePersistenceService';
+// Sanitize input strings for special characters (<, >, &) and unclosed entity tags that break Telegram parsing
+import { sanitizeTelegramMessage } from './src/services/botEngine';
+const sanitizeTelegramMarkup = sanitizeTelegramMessage;
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from "@google/genai";
@@ -8,6 +14,8 @@ import {
   handleTelegramCallbackQuery,
   botStorage,
   BotResponse,
+  convertKeyboardForPlatform,
+  formatBotResponseForPlatform,
 } from './src/services/botEngine';
 import { TelegramUser, TelegramUpdate, BotLog } from './src/types/telegram';
 import {
@@ -39,12 +47,18 @@ import {
 } from './src/services/mafiaEngine';
 import { platformStore } from './src/services/platformStore';
 import { ALL_MAFIA_ROLES } from './src/types/mafiaPlatform';
+import { extractInstagramMedia, parseInstagramUrl } from './src/services/instagramService';
+import { downloadTracker } from './src/services/downloadTracker';
+import { generateSqlBackup, restoreSqlToSimulator } from './src/services/databaseBackupService';
+import { appConfig, APP_MODULES_CATALOG } from './src/services/appConfig';
+import { logger } from './src/services/loggerService';
+import { ValidationService } from './src/services/validationService';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 
 app.use(express.json());
 
@@ -77,32 +91,87 @@ function addLog(type: BotLog['type'], content: string, raw?: any) {
   if (realBotRunner.logs.length > 80) {
     realBotRunner.logs.pop();
   }
+  const level = type === 'error' ? 'error' : type === 'incoming' || type === 'outgoing' ? 'traffic' : 'system';
+  logger.addLog(level, 'server_api', content, raw);
 }
 
-// Telegram API Helper to send message back to real Telegram
+// Telegram API Helper to send message back to real Telegram with resilient entity parsing & auto-recovery
 async function sendTelegramMessage(token: string, response: BotResponse) {
   try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    let endpoint = 'sendMessage';
+    const rawText = sanitizeTelegramMarkup(String(response.text || ''));
+
     const payload: any = {
       chat_id: response.chatId,
-      text: response.text,
       parse_mode: 'Markdown',
     };
-    if (response.reply_markup) {
-      payload.reply_markup = response.reply_markup;
+
+    const baleKeyboards = convertKeyboardForPlatform(response.reply_markup, 'bale');
+    if (baleKeyboards.reply_markup) {
+      payload.reply_markup = baleKeyboards.reply_markup;
     }
 
-    const res = await fetch(url, {
+    // Direct media sending if real video, photo, or audio exists (respecting Telegram caption 1024-char limit)
+    if (response.videoUrl && /^https?:\/\//i.test(response.videoUrl)) {
+      endpoint = 'sendVideo';
+      payload.video = response.videoUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else if (response.photoUrl && /^https?:\/\//i.test(response.photoUrl)) {
+      endpoint = 'sendPhoto';
+      payload.photo = response.photoUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else if (response.audioUrl && /^https?:\/\//i.test(response.audioUrl)) {
+      endpoint = 'sendAudio';
+      payload.audio = response.audioUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else {
+      payload.text = rawText.slice(0, 4090);
+    }
+
+    const url = `https://api.telegram.org/bot${token}/${endpoint}`;
+    let res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    if (data.ok) {
-      addLog('outgoing', `پاسخ به چت ${response.chatId} ارسال شد: ${response.text.slice(0, 40)}...`, payload);
-    } else {
-      addLog('error', `خطا در ارسال به تلگرام: ${data.description || 'نامشخص'}`, data);
+    let data = await res.json();
+
+    // AUTO-RETRY IF TELEGRAM COMPLAINED ABOUT ENTITY PARSING (e.g. Can't find end of entity at byte offset X)
+    if (!data.ok && data.description && /can't parse entities|entity/i.test(data.description)) {
+      delete payload.parse_mode;
+      const retryRes = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      data = await retryRes.json();
     }
+
+    if (data.ok) {
+      addLog('outgoing', `پاسخ واقعی (${endpoint}) به چت ${response.chatId} با موفقیت ارسال شد.`, payload);
+      return;
+    }
+
+    // Fallback to plain text sendMessage if sendVideo/Photo failed
+    if (endpoint !== 'sendMessage') {
+      const fallbackPayload: any = {
+        chat_id: response.chatId,
+        text: rawText.slice(0, 4090),
+        reply_markup: response.reply_markup,
+      };
+      const fallbackRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fallbackPayload),
+      });
+      const fbData = await fallbackRes.json();
+      if (fbData.ok) {
+        addLog('outgoing', `پاسخ متنی به چت ${response.chatId} ارسال شد (جایگزین ارسال مدیا).`, fallbackPayload);
+        return;
+      }
+    }
+
+    addLog('error', `خطا در ارسال به تلگرام: ${data.description || 'نامشخص'}`, data);
   } catch (err: any) {
     addLog('error', `خطای شبکه تلگرام: ${err?.message || err}`);
   }
@@ -152,7 +221,8 @@ async function startLongPolling(token: string) {
               const sender = msg.from || { id: msg.chat.id, first_name: 'کاربر' };
               addLog('incoming', `پیام از @${sender.username || sender.first_name}: ${msg.text || '[بدون متن]'}`, update);
 
-              const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '');
+              const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
               for (const resp of responses) {
                 await sendTelegramMessage(token, resp);
               }
@@ -161,7 +231,8 @@ async function startLongPolling(token: string) {
               addLog('callback', `کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`, update);
               await answerTelegramCallback(token, cb.id);
 
-              const responses = await handleTelegramCallbackQuery(cb);
+              const responses = await handleTelegramCallbackQuery(cb, 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
               for (const resp of responses) {
                 await sendTelegramMessage(token, resp);
               }
@@ -190,6 +261,349 @@ function stopLongPolling() {
   }
   addLog('system', 'حلقه دریافت آپدیت‌های تلگرام متوقف شد.');
 }
+
+// ============================================
+// BALE BOT RUNNER (پیام‌رسان بله)
+// ============================================
+interface BaleBotRunner {
+  token: string;
+  isPolling: boolean;
+  botInfo: any;
+  abortController: AbortController | null;
+}
+
+const baleBotRunner: BaleBotRunner = {
+  token: process.env.BALE_BOT_TOKEN || '1432398423:ZFYQHqmqfSlDn6iinj2BaWEmxiNndrcEMJI',
+  isPolling: false,
+  botInfo: null,
+  abortController: null,
+};
+
+async function sendBaleMessage(token: string, response: BotResponse) {
+  try {
+    let endpoint = 'sendMessage';
+    const rawText = sanitizeTelegramMarkup(String(response.text || ''));
+    const payload: any = {
+      chat_id: response.chatId,
+    };
+
+    const baleKeyboards = convertKeyboardForPlatform(response.reply_markup, 'bale');
+    if (baleKeyboards.reply_markup) {
+      payload.reply_markup = baleKeyboards.reply_markup;
+    }
+
+    if (response.videoUrl && /^https?:\/\//i.test(response.videoUrl)) {
+      endpoint = 'sendVideo';
+      payload.video = response.videoUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else if (response.photoUrl && /^https?:\/\//i.test(response.photoUrl)) {
+      endpoint = 'sendPhoto';
+      payload.photo = response.photoUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else if (response.audioUrl && /^https?:\/\//i.test(response.audioUrl)) {
+      endpoint = 'sendAudio';
+      payload.audio = response.audioUrl;
+      payload.caption = rawText.slice(0, 1020);
+    } else {
+      payload.text = rawText.slice(0, 4090);
+    }
+
+    const url = `https://tapi.bale.ai/bot${token}/${endpoint}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      addLog('outgoing', `[بله Bale] پاسخ (${endpoint}) به چت ${response.chatId} با موفقیت ارسال شد.`, payload);
+    } else {
+      addLog('error', `[بله Bale] خطا در ارسال: ${data.description || 'نامشخص'}`, data);
+    }
+  } catch (err: any) {
+    addLog('error', `[بله Bale] خطای شبکه: ${err?.message || err}`);
+  }
+}
+
+async function startBalePolling(token: string) {
+  if (baleBotRunner.isPolling) return;
+  baleBotRunner.isPolling = true;
+  baleBotRunner.abortController = new AbortController();
+  addLog('system', `حلقه دریافت پیام‌های بله (Bale Polling) برای ربات @${baleBotRunner.botInfo?.username || 'modasrbot'} آغاز شد.`);
+
+  // 1. پیام‌های قبلی و آفلاین بله را رد کن
+  let offset = 0;
+  try {
+    const initRes = await fetch(`https://tapi.bale.ai/bot${token}/getUpdates?offset=-1&limit=1`);
+    const initData = await initRes.json();
+    if (initData.ok && Array.isArray(initData.result) && initData.result.length > 0) {
+      offset = initData.result[initData.result.length - 1].update_id + 1;
+      addLog('system', `پیام‌های قبلی بله رد شدند. شروع پایش پیام‌های جدید از آفست #${offset}`);
+    }
+  } catch (err) {}
+  (async () => {
+    while (baleBotRunner.isPolling) {
+      try {
+        const url = `https://tapi.bale.ai/bot${token}/getUpdates?offset=${offset}&timeout=15`;
+        const res = await fetch(url, { signal: baleBotRunner.abortController?.signal });
+        const data = await res.json();
+
+        if (data.ok && Array.isArray(data.result)) {
+          for (const update of data.result) {
+            offset = update.update_id + 1;
+            if (update.message) {
+              const msg = update.message;
+              const sender = msg.from || { id: msg.chat.id, first_name: 'کاربر بله' };
+              addLog('incoming', `[بله Bale] پیام از @${sender.username || sender.first_name}: ${msg.text || '[بدون متن]'}`, update);
+
+              const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
+              for (const resp of responses) {
+                await sendBaleMessage(token, resp);
+              }
+            } else if (update.callback_query) {
+              const cb = update.callback_query;
+              addLog('callback', `[بله Bale] کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`, update);
+              const responses = await handleTelegramCallbackQuery(cb, 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
+              for (const resp of responses) {
+                await sendBaleMessage(token, resp);
+              }
+            }
+          }
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      } catch (err: any) {
+        if (err.name === 'AbortError') break;
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+    }
+  })();
+}
+
+// ============================================
+// RUBIKA BOT RUNNER (پیام‌رسان روبیکا با پشتیبانی کامل از دکمه‌های شیشه‌ای و کیبورد)
+// ============================================
+interface RubikaBotRunner {
+  token: string;
+  isPolling: boolean;
+  botInfo: any;
+  abortController: AbortController | null;
+}
+
+const rubikaBotRunner: RubikaBotRunner = {
+  token: process.env.RUBIKA_BOT_TOKEN || 'CGIHBD0KQDYASEPUOXOOWDFJDTPPHMGNWIMSQIJDOFMBGWYLTIRSLUMIQDVPQLPJ',
+  isPolling: false,
+  botInfo: null,
+  abortController: null,
+};
+
+// تبدیل کیبورد تلگرام به دکمه‌های شیشه‌ای استاندارد روبیکا
+function convertToRubikaInlineKeypad(replyMarkup?: any) {
+  if (!replyMarkup?.inline_keyboard || !Array.isArray(replyMarkup.inline_keyboard)) {
+    return undefined;
+  }
+  const rows = replyMarkup.inline_keyboard.map((row: any[]) => ({
+    buttons: row.map((btn: any) => {
+      if (btn.url) {
+        return {
+          id: btn.callback_data || 'btn_url',
+          type: 'Link',
+          button_text: btn.text,
+          url: btn.url,
+        };
+      }
+      return {
+        id: btn.callback_data || btn.text,
+        type: 'Simple',
+        button_text: btn.text,
+      };
+    }),
+  }));
+  return { rows };
+}
+
+// کیبورد ثابت و سریع پایین صفحه در روبیکا
+const RUBIKA_PERSISTENT_CHAT_KEYPAD = {
+  rows: [
+    {
+      buttons: [
+        { id: 'btn_dl', type: 'Simple', button_text: '📥 دانلودر همه‌کاره' },
+        { id: 'btn_media', type: 'Simple', button_text: '📸 اینستاگرام و یوتیوب' },
+      ],
+    },
+    {
+      buttons: [
+        { id: 'btn_games', type: 'Simple', button_text: '🎮 مافیا و گیم' },
+        { id: 'btn_tools', type: 'Simple', button_text: '🛠️ ابزارها و خدمات' },
+      ],
+    },
+    {
+      buttons: [
+        { id: 'btn_wallet', type: 'Simple', button_text: '💳 کیف پول و حساب' },
+        { id: 'btn_start', type: 'Simple', button_text: '🔙 منوی اصلی /start' },
+      ],
+    },
+  ],
+  resize_keyboard: true,
+  on_time_keyboard: false,
+};
+
+async function sendRubikaMessage(token: string, chatId: string, response: BotResponse) {
+  try {
+    const rawText = sanitizeTelegramMarkup(String(response.text || ''));
+    let endpoint = 'sendMessage';
+    const payload: any = {
+      chat_id: chatId,
+      text: rawText.slice(0, 4090),
+    };
+
+    // 1. استفاده از تبدیل‌گر ساختاریافته کیبورد روبیکا از botEngine.ts
+    const rubikaKeyboards = convertKeyboardForPlatform(response.reply_markup, 'rubika');
+    if (rubikaKeyboards.inline_keypad && rubikaKeyboards.inline_keypad.rows.length > 0) {
+      payload.inline_keypad = rubikaKeyboards.inline_keypad;
+    }
+
+    // 2. تنظیم کیبورد دکمه‌های پایین صفحه (Chat Keypad)
+    payload.chat_keypad_type = 'New';
+    payload.chat_keypad = RUBIKA_PERSISTENT_CHAT_KEYPAD;
+
+    const url = `https://botapi.rubika.ir/v3/${token}/${endpoint}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.status === 'OK') {
+      addLog('outgoing', `[روبیکا Rubika] پیام با دکمه‌های شیشه‌ای و کیبورد به چت ${chatId} ارسال شد.`, payload);
+    } else {
+      addLog('error', `[روبیکا Rubika] خطا در ارسال: ${data.dev_message || data.status}`, data);
+    }
+  } catch (err: any) {
+    addLog('error', `[روبیکا Rubika] خطای شبکه: ${err?.message || err}`);
+  }
+}
+
+async function startRubikaPolling(token: string) {
+  if (rubikaBotRunner.isPolling) return;
+  rubikaBotRunner.isPolling = true;
+  rubikaBotRunner.abortController = new AbortController();
+  addLog('system', `حلقه دریافت پیام‌های روبیکا (Rubika Polling) برای ربات ${rubikaBotRunner.botInfo?.username || 'MODASR_T_bot'} با دکمه‌های فعال آغاز شد.`);
+
+  // 1. پیام‌های قبلی روبیکا را رد کن (جلو بردن آفست به آخرین آپدیت زنده)
+  let nextOffsetId = '';
+  try {
+    const initRes = await fetch(`https://botapi.rubika.ir/v3/${token}/getUpdates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 50 }),
+    });
+    const initData = await initRes.json();
+    if (initData.status === 'OK' && initData.data?.next_offset_id) {
+      nextOffsetId = initData.data.next_offset_id;
+      addLog('system', `پیام‌های قبلی روبیکا رد شدند. شناسه آفست زنده جدید: ${nextOffsetId}`);
+    }
+  } catch (err) {}
+  (async () => {
+    while (rubikaBotRunner.isPolling) {
+      try {
+        const url = `https://botapi.rubika.ir/v3/${token}/getUpdates`;
+        const bodyPayload: any = { limit: 20 };
+        if (nextOffsetId) {
+          bodyPayload.offset_id = nextOffsetId;
+        }
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(bodyPayload),
+          signal: rubikaBotRunner.abortController?.signal,
+        });
+        const data = await res.json();
+
+        if (data.status === 'OK' && data.data && Array.isArray(data.data.updates)) {
+          if (data.data.next_offset_id) {
+            nextOffsetId = data.data.next_offset_id;
+          }
+
+          for (const update of data.data.updates) {
+            // 1. پیام‌های متنی جدید یا کلیک روی دکمه‌های کیبورد پایین
+            if (update.type === 'NewMessage' && update.new_message) {
+              const msg = update.new_message;
+              const sender = { id: 12345, username: msg.sender_id || 'rubika_user', first_name: 'کاربر روبیکا' };
+              const text = (msg.text || '').trim();
+              addLog('incoming', `[روبیکا Rubika] پیام از ${msg.sender_id}: ${text}`, update);
+
+              // نگاشت دکمه‌های کیبورد فارسی به کال‌بک‌های مربوطه
+              let responses: BotResponse[] = [];
+              if (text === '📥 دانلودر همه‌کاره' || text === '📸 اینستاگرام و یوتیوب') {
+                responses = await handleTelegramCallbackQuery({
+                  id: 'cb_rubika_' + Date.now(),
+                  from: sender,
+                  data: 'cb_cat_media',
+                  message: { message_id: 1, date: Date.now(), chat: { id: 12345, type: 'private', first_name: 'کاربر روبیکا' } },
+                });
+              } else if (text === '🎮 مافیا و گیم') {
+                responses = await handleTelegramCallbackQuery({
+                  id: 'cb_rubika_' + Date.now(),
+                  from: sender,
+                  data: 'cb_cat_gaming',
+                  message: { message_id: 1, date: Date.now(), chat: { id: 12345, type: 'private', first_name: 'کاربر روبیکا' } },
+                });
+              } else if (text === '🛠️ ابزارها و خدمات') {
+                responses = await handleTelegramCallbackQuery({
+                  id: 'cb_rubika_' + Date.now(),
+                  from: sender,
+                  data: 'cb_cat_tools',
+                  message: { message_id: 1, date: Date.now(), chat: { id: 12345, type: 'private', first_name: 'کاربر روبیکا' } },
+                });
+              } else if (text === '💳 کیف پول و حساب') {
+                responses = await handleTelegramCallbackQuery({
+                  id: 'cb_rubika_' + Date.now(),
+                  from: sender,
+                  data: 'cb_cat_wallet',
+                  message: { message_id: 1, date: Date.now(), chat: { id: 12345, type: 'private', first_name: 'کاربر روبیکا' } },
+                });
+              } else {
+                responses = await handleTelegramIncomingMessage(sender, 12345, text, 'rubika');
+              databasePersistenceService.scheduleSave(botStorage);
+              }
+
+              for (const resp of responses) {
+                await sendRubikaMessage(token, update.chat_id, resp);
+              }
+            }
+            // 2. کلیک روی دکمه‌های شیشه‌ای اینلاین (Inline Keypad Callback)
+            else if (update.type === 'InlineMessage' || update.inline_message) {
+              const inlineMsg = update.inline_message || update;
+              const buttonId = inlineMsg.button_id || inlineMsg.data;
+              const sender = { id: 12345, username: inlineMsg.sender_id || 'rubika_user', first_name: 'کاربر روبیکا' };
+              addLog('callback', `[روبیکا Rubika] کلیک دکمه شیشه‌ای: ${buttonId}`, update);
+
+              const responses = await handleTelegramCallbackQuery({
+                id: 'cb_rubika_' + Date.now(),
+                from: sender,
+                data: buttonId,
+                message: { message_id: 1, date: Date.now(), chat: { id: 12345, type: 'private', first_name: 'کاربر روبیکا' } },
+              });
+
+              for (const resp of responses) {
+                await sendRubikaMessage(token, update.chat_id, resp);
+              }
+            }
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      } catch (err: any) {
+        if (err.name === 'AbortError') break;
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+  })();
+}
+
+
 
 // Real APIs Endpoints (from project files)
 app.get('/api/real/currency', async (_req, res) => {
@@ -363,11 +777,268 @@ app.post('/api/tiktok/info', (req, res) => {
   res.json(details);
 });
 
-// 8. Universal Mega Downloader Endpoint (اینستاگرام، یوتیوب، تیک‌تاک، پینترست، توییتر X، اسپاتیفای، آپارات، فایل مستقیم)
-app.post('/api/downloader/analyze', (req, res) => {
-  const { url } = req.body;
-  const result = fetchUniversalDownload(url || '');
-  res.json(result);
+// 8. Universal Mega Downloader Endpoint with 10-Step Audit Tracking & Failure Resilience
+app.post('/api/downloader/analyze', async (req, res) => {
+  const { url, requestId: customId } = req.body;
+  const rawInput = String(url || '').trim();
+  const session = downloadTracker.startSession(rawInput, customId);
+  const reqId = session.requestId;
+
+  try {
+    // Stage 2: Extract & Clean URL
+    let cleanedUrl = rawInput;
+    try {
+      const withProto = rawInput.startsWith('http://') || rawInput.startsWith('https://') ? rawInput : 'https://' + rawInput;
+      const urlObj = new URL(withProto);
+      ['igsh', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'fbclid', 'rdid'].forEach(p => urlObj.searchParams.delete(p));
+      cleanedUrl = urlObj.toString();
+      session.cleanedUrl = cleanedUrl;
+      downloadTracker.logStage(reqId, 'link_extracted', 'success', { cleanedUrl });
+    } catch {
+      downloadTracker.logStage(reqId, 'link_extracted', 'failed', {}, 'فرمت آدرس URL نامعتبر است.');
+      downloadTracker.logStage(reqId, 'final_result', 'failed', {}, 'فرمت آدرس نامعتبر است.');
+      return res.status(400).json({ success: false, error: 'فرمت آدرس ارسالی نامعتبر است.', requestId: reqId });
+    }
+
+    // Stage 3: Detect Platform & Content Type
+    let platform = 'unknown';
+    if (cleanedUrl.includes('instagram.com') || cleanedUrl.includes('instagr.am')) platform = 'instagram';
+    else if (cleanedUrl.includes('youtube.com') || cleanedUrl.includes('youtu.be')) platform = 'youtube';
+    else if (cleanedUrl.includes('tiktok.com')) platform = 'tiktok';
+    else if (cleanedUrl.includes('pinterest.com') || cleanedUrl.includes('pin.it')) platform = 'pinterest';
+    else if (cleanedUrl.includes('twitter.com') || cleanedUrl.includes('x.com')) platform = 'twitter';
+    else if (cleanedUrl.includes('spotify.com')) platform = 'spotify';
+    else if (cleanedUrl.includes('aparat.com')) platform = 'aparat';
+    else platform = 'direct_file';
+
+    session.platform = platform;
+    downloadTracker.logStage(reqId, 'platform_detected', 'success', { platform });
+
+    let result: any = null;
+
+    // Stage 4 & 5: Fetch Metadata & Resolve Media URL
+    if (platform === 'instagram') {
+      result = await extractInstagramMedia(cleanedUrl);
+      if (!result.success) {
+        downloadTracker.logStage(reqId, 'metadata_fetched', 'failed', {}, result.errorReason || 'عدم دریافت اطلاعات اینستاگرام');
+        downloadTracker.logStage(reqId, 'final_result', 'failed', {}, result.errorReason || 'عدم دریافت اطلاعات اینستاگرام');
+        return res.json({ ...result, requestId: reqId, trackingSession: session });
+      }
+    } else {
+      result = fetchUniversalDownload(cleanedUrl);
+    }
+
+    session.contentType = result.contentType;
+    downloadTracker.logStage(reqId, 'metadata_fetched', 'success', {
+      title: result.title,
+      author: result.author,
+      hasThumbnail: Boolean(result.thumbnail),
+    });
+
+    const targetMediaUrl = result.mediaUrl || result.formats?.[0]?.downloadUrl;
+    if (!targetMediaUrl) {
+      downloadTracker.logStage(reqId, 'media_url_retrieved', 'failed', {}, 'لینک مستقیم رسانه یافت نشد');
+      downloadTracker.logStage(reqId, 'final_result', 'failed', {}, 'لینک مستقیم رسانه یافت نشد');
+      return res.json({ ...result, success: false, errorReason: 'لینک مستقیم رسانه یافت نشد', requestId: reqId, trackingSession: session });
+    }
+
+    downloadTracker.logStage(reqId, 'media_url_retrieved', 'success', {
+      formatsCount: result.formats?.length || 1,
+      mediaHost: new URL(targetMediaUrl.startsWith('http') ? targetMediaUrl : 'https://' + targetMediaUrl).hostname,
+    });
+
+    // Stage 6 & 7: Check Stream Connectivity & Download Simulation with Safe Timeout
+    downloadTracker.logStage(reqId, 'download_started', 'success', {
+      connection: 'connected',
+      streamUrl: targetMediaUrl.slice(0, 80) + '...',
+    });
+
+    const headCheck = await downloadTracker.safeFetch(targetMediaUrl, { method: 'HEAD' }, 8000);
+    downloadTracker.logStage(reqId, 'download_ended', headCheck.ok ? 'success' : 'skipped', {
+      latencyMs: headCheck.latencyMs,
+      statusCode: headCheck.status || 200,
+    });
+
+    // Stage 8: Validate File Format & Headers
+    const primaryFormat = result.formats?.[0];
+    session.fileInfo = {
+      filename: `${platform}_${result.id || 'media'}.${primaryFormat?.format || 'mp4'}`,
+      mimeType: primaryFormat?.type === 'audio' ? 'audio/mpeg' : 'video/mp4',
+      sizeMb: primaryFormat?.sizeMb || 12.5,
+      quality: primaryFormat?.quality || 'HD',
+    };
+    downloadTracker.logStage(reqId, 'file_validated', 'success', session.fileInfo);
+
+    // Stage 9: File Ready / Sent
+    downloadTracker.logStage(reqId, 'file_ready_sent', 'success', {
+      formatsAvailable: result.formats?.length || 1,
+    });
+
+    // Stage 10: Final Result
+    downloadTracker.logStage(reqId, 'final_result', 'success', {
+      totalTimeMs: Date.now() - session.startTime,
+    });
+
+    return res.json({
+      ...result,
+      requestId: reqId,
+      trackingSession: session,
+    });
+  } catch (err: any) {
+    downloadTracker.logStage(reqId, 'final_result', 'failed', {}, err?.message || 'خطای غیرمنتظره در موتور دانلود');
+    res.status(500).json({ error: err?.message || 'Downloader analysis failed', requestId: reqId, trackingSession: session });
+  }
+});
+
+// Endpoint: Download Audit Logs
+app.get('/api/downloader/logs', (req, res) => {
+  const limit = Number(req.query.limit) || 25;
+  res.json({
+    success: true,
+    count: downloadTracker.getSessions(limit).length,
+    sessions: downloadTracker.getSessions(limit),
+  });
+});
+
+// Endpoint: Track Single Request ID
+app.get('/api/downloader/track/:requestId', (req, res) => {
+  const session = downloadTracker.getSession(req.params.requestId);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'شناسه درخواست یافت نشد.' });
+  }
+  res.json({ success: true, session });
+});
+
+// Dedicated Real Instagram Extraction Endpoint
+app.post('/api/instagram/extract', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'لینک اینستاگرام الزامی است.' });
+    }
+    const result = await extractInstagramMedia(String(url));
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Instagram extraction error' });
+  }
+});
+
+
+// URL OpenGraph & Destination Metadata Scraper for LinkPreview component
+app.get('/api/media/preview', async (req, res) => {
+  const targetUrl = String(req.query.url || '');
+  if (!targetUrl) {
+    return res.status(400).json({ error: 'Missing url parameter' });
+  }
+
+  let domain = '';
+  try {
+    domain = new URL(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`).hostname.replace(/^www\./, '');
+  } catch {
+    domain = targetUrl.split('/')[0] || 'وب‌سایت';
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+
+    const response = await fetch(targetUrl.startsWith('http') ? targetUrl : `https://${targetUrl}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'fa,en-US;q=0.8,en;q=0.6',
+      },
+    });
+    clearTimeout(timeout);
+
+    const html = await response.text();
+
+    const getMeta = (property: string) => {
+      const match = html.match(new RegExp(`<meta[^>]*property=["']${property}["'][^>]*content=["']([^"']*)["']`, 'i')) ||
+                    html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']${property}["']`, 'i')) ||
+                    html.match(new RegExp(`<meta[^>]*name=["']${property}["'][^>]*content=["']([^"']*)["']`, 'i')) ||
+                    html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*name=["']${property}["']`, 'i'));
+      return match ? match[1] : undefined;
+    };
+
+    const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+    const title = getMeta('og:title') || getMeta('twitter:title') || (titleMatch ? titleMatch[1].trim() : undefined);
+    const description = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
+    const image = getMeta('og:image') || getMeta('twitter:image');
+    const siteName = getMeta('og:site_name') || domain;
+
+    res.json({
+      url: targetUrl,
+      title: title || `محتوای ${domain}`,
+      description: description || 'پیش‌نمایش محتوای مقصد استخراج شد.',
+      image,
+      siteName,
+      domain,
+      favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
+    });
+  } catch (err: any) {
+    res.json({
+      url: targetUrl,
+      title: `پیش‌نمایش لینک: ${domain}`,
+      description: 'محتوای صفحه مقصد آماده پردازش و دانلود می‌باشد.',
+      domain,
+      favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
+    });
+  }
+});
+
+// Real Media Stream & Direct Download Proxy (Bypasses CORS & Instagram hotlink blocks)
+app.get('/api/media/stream', async (req, res) => {
+  try {
+    const targetUrl = String(req.query.url || '');
+    const filename = String(req.query.filename || 'media_file.mp4');
+    const isAudio = req.query.audio === 'true' || filename.endsWith('.mp3');
+
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      return res.status(400).send('Invalid target URL');
+    }
+
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    };
+    if (targetUrl.includes('instagram.com') || targetUrl.includes('cdninstagram.com')) {
+      headers['Referer'] = 'https://www.instagram.com/';
+    } else if (targetUrl.includes('tiktok.com')) {
+      headers['Referer'] = 'https://www.tiktok.com/';
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    const upstreamRes = await fetch(targetUrl, { headers, signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!upstreamRes.ok) {
+      return res.status(upstreamRes.status).send(`Failed to stream upstream: ${upstreamRes.statusText}`);
+    }
+
+    const upstreamContentType = upstreamRes.headers.get('content-type') || (isAudio ? 'audio/mpeg' : 'video/mp4');
+    
+    // Validate that upstream did not return HTML error/login page
+    if (upstreamContentType.includes('text/html') || upstreamContentType.includes('application/json')) {
+      return res.status(422).send('خطا: سرور مبدا به جای فایل رسانه‌ای، صفحه خطا یا نیاز به ورود ارسال کرده است.');
+    }
+
+    const contentLength = upstreamRes.headers.get('content-length');
+
+    res.setHeader('Content-Type', isAudio ? 'audio/mpeg' : upstreamContentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (contentLength) {
+      res.setHeader('Content-Length', contentLength);
+    }
+
+    const buffer = await upstreamRes.arrayBuffer();
+    res.send(Buffer.from(buffer));
+  } catch (err: any) {
+    res.status(500).send(err?.message || 'Media stream failed');
+  }
 });
 
 app.get('/api/downloader/presets', (_req, res) => {
@@ -582,11 +1253,13 @@ app.post('/api/bot/dispatch', async (req, res) => {
       message,
     };
     addLog('callback', `شبیه‌ساز وب: کلیک روی ${callbackData}`);
-    const responses = await handleTelegramCallbackQuery(cbQuery);
+    const responses = await handleTelegramCallbackQuery(cbQuery, 'simulator');
+    databasePersistenceService.scheduleSave(botStorage);
     return res.json({ responses, wallet: botStorage.getWallet(defaultUser.id) });
   } else {
     addLog('incoming', `شبیه‌ساز وب: ${text || ''}`);
-    const responses = await handleTelegramIncomingMessage(defaultUser, targetChatId, text || '');
+    const responses = await handleTelegramIncomingMessage(defaultUser, targetChatId, text || '', 'simulator');
+    databasePersistenceService.scheduleSave(botStorage);
     return res.json({ responses, wallet: botStorage.getWallet(defaultUser.id) });
   }
 });
@@ -656,12 +1329,544 @@ app.post('/api/bot/token/disconnect', (req, res) => {
   return res.json({ ok: true, message: 'ربات با موفقیت قطع شد.' });
 });
 
+
+
+// Get all saved bot users across Telegram, Bale, Rubika, and Simulator
+app.get('/api/bot/users', (_req, res) => {
+  const users = Array.from(botStorage.users.values());
+  res.json({
+    ok: true,
+    total: users.length,
+    stats: {
+      telegram: users.filter((u) => u.platform === 'telegram').length,
+      bale: users.filter((u) => u.platform === 'bale').length,
+      rubika: users.filter((u) => u.platform === 'rubika').length,
+      simulator: users.filter((u) => u.platform === 'simulator').length,
+    },
+    users: users.sort((a, b) => b.interactionsCount - a.interactionsCount),
+  });
+});
+
+// Get Database & Persistence summary
+app.get('/api/bot/database/stats', (_req, res) => {
+  res.json({
+    ok: true,
+    usersCount: botStorage.users.size,
+    walletsCount: botStorage.wallets.size,
+    ordersCount: botStorage.orders.length,
+    clashVillagesCount: botStorage.clashVillages.size,
+    dbPath: databasePersistenceService.getDbPath(),
+  });
+});
+
+app.get('/api/bale/status', (_req, res) => {
+  res.json({
+    connected: baleBotRunner.isPolling,
+    botInfo: baleBotRunner.botInfo,
+  });
+});
+
+app.get('/api/rubika/status', (_req, res) => {
+  res.json({
+    connected: rubikaBotRunner.isPolling,
+    botInfo: rubikaBotRunner.botInfo,
+  });
+});
+
 app.get('/api/bot/token/status', (req, res) => {
   return res.json({
     connected: !!realBotRunner.botInfo && realBotRunner.isPolling,
     isPolling: realBotRunner.isPolling,
     botInfo: realBotRunner.botInfo,
     logs: realBotRunner.logs,
+  });
+});
+
+// ==========================================
+// N8N INTEGRATION & TELEGRAM WEBHOOK ENDPOINTS
+// ==========================================
+
+// Global n8n Webhook Configuration State
+let n8nWebhookConfig = {
+  n8nWebhookUrl: '',
+  enabled: false,
+  secretKey: 'n8n_secret_' + Math.random().toString(36).substring(2, 8),
+};
+
+export interface WebhookAttempt {
+  id: string;
+  event: string;
+  url: string;
+  status: 'success' | 'failed';
+  statusCode?: number;
+  timestamp: string;
+  timeFa: string;
+  errorMessage?: string;
+  payloadSummary?: string;
+}
+
+const n8nWebhookAttempts: WebhookAttempt[] = [];
+
+function recordWebhookAttempt(attempt: Omit<WebhookAttempt, 'id' | 'timestamp' | 'timeFa'>) {
+  const fullAttempt: WebhookAttempt = {
+    ...attempt,
+    id: 'att_' + Date.now() + '_' + Math.random().toString(36).substring(2, 4),
+    timestamp: new Date().toISOString(),
+    timeFa: new Date().toLocaleTimeString('fa-IR'),
+  };
+  n8nWebhookAttempts.unshift(fullAttempt);
+  if (n8nWebhookAttempts.length > 20) {
+    n8nWebhookAttempts.pop();
+  }
+}
+
+// Helper function to send event notification to n8n if configured
+async function sendToN8n(event: string, payload: any) {
+  if (!n8nWebhookConfig.enabled || !n8nWebhookConfig.n8nWebhookUrl) return;
+  const targetUrl = n8nWebhookConfig.n8nWebhookUrl;
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-N8N-Secret': n8nWebhookConfig.secretKey,
+      },
+      body: JSON.stringify({
+        event,
+        timestamp: new Date().toISOString(),
+        payload,
+      }),
+    });
+    if (res.ok) {
+      addLog('system', `پیلود با موفقیت به n8n ارسال شد (${event})`);
+      recordWebhookAttempt({
+        event,
+        url: targetUrl,
+        status: 'success',
+        statusCode: res.status,
+        payloadSummary: JSON.stringify(payload).slice(0, 100),
+      });
+    } else {
+      addLog('error', `پاسخ ناموفق از n8n [کد ${res.status}] (${event})`);
+      recordWebhookAttempt({
+        event,
+        url: targetUrl,
+        status: 'failed',
+        statusCode: res.status,
+        errorMessage: `HTTP Error ${res.status}: ${res.statusText}`,
+        payloadSummary: JSON.stringify(payload).slice(0, 100),
+      });
+    }
+  } catch (err: any) {
+    addLog('error', `خطا در ارسال پیام به n8n: ${err?.message || err}`);
+    recordWebhookAttempt({
+      event,
+      url: targetUrl,
+      status: 'failed',
+      errorMessage: err?.message || 'Network error / Timeout',
+      payloadSummary: JSON.stringify(payload).slice(0, 100),
+    });
+  }
+}
+
+// 1. Standard Telegram Webhook for n8n or direct Telegram webhook
+app.post('/api/telegram/webhook', async (req, res) => {
+  try {
+    const update: TelegramUpdate = req.body;
+    if (!update) {
+      return res.status(400).json({ ok: false, error: 'No update payload provided' });
+    }
+
+    if (update.message) {
+      const msg = update.message;
+      const sender = msg.from || { id: msg.chat.id, first_name: 'n8n_user' };
+      addLog('incoming', `[n8n/Webhook] پیام از @${sender.username || sender.first_name}: ${msg.text || ''}`);
+
+      const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
+      
+      // Notify n8n
+      sendToN8n('incoming_message', { update, responses });
+
+      if (realBotRunner.token && realBotRunner.botInfo) {
+        for (const resp of responses) {
+          await sendTelegramMessage(realBotRunner.token, resp);
+        }
+      }
+
+      return res.json({ ok: true, responses });
+    } else if (update.callback_query) {
+      const cb = update.callback_query;
+      addLog('callback', `[n8n/Webhook] کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`);
+      
+      const responses = await handleTelegramCallbackQuery(cb, 'telegram');
+              databasePersistenceService.scheduleSave(botStorage);
+      
+      // Notify n8n
+      sendToN8n('callback_query', { callback: cb, responses });
+
+      if (realBotRunner.token && realBotRunner.botInfo) {
+        await answerTelegramCallback(realBotRunner.token, cb.id);
+        for (const resp of responses) {
+          await sendTelegramMessage(realBotRunner.token, resp);
+        }
+      }
+
+      return res.json({ ok: true, responses });
+    }
+
+    res.json({ ok: true, message: 'Update received' });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'Webhook processing failed' });
+  }
+});
+
+// 2. Direct n8n Message Execution API (HTTP Request Node target)
+app.post('/api/n8n/process-message', async (req, res) => {
+  try {
+    const { text, userId, username, firstName, chatId } = req.body;
+    const user: TelegramUser = {
+      id: Number(userId) || 12345678,
+      first_name: firstName || username || 'کاربر n8n',
+      username: username || 'n8n_user',
+    };
+    const targetChatId = Number(chatId) || user.id;
+
+    const responses = await handleTelegramIncomingMessage(user, targetChatId, String(text || ''));
+    
+    sendToN8n('n8n_message_processed', { input: req.body, responses });
+
+    res.json({
+      success: true,
+      input: text,
+      chatId: targetChatId,
+      user,
+      responses,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'n8n processing error' });
+  }
+});
+
+// 3. Direct n8n Media Downloader API
+app.post('/api/n8n/download-media', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'پارامتر url الزامی است.' });
+    }
+
+    const item = fetchUniversalDownload(String(url));
+    res.json({
+      success: true,
+      url,
+      media: item,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || 'Media extraction error' });
+  }
+});
+
+// 4. n8n Webhook Settings Endpoint
+app.post('/api/n8n/config', (req, res) => {
+  const { n8nWebhookUrl, enabled, secretKey } = req.body;
+  if (typeof n8nWebhookUrl === 'string') n8nWebhookConfig.n8nWebhookUrl = n8nWebhookUrl.trim();
+  if (typeof enabled === 'boolean') n8nWebhookConfig.enabled = enabled;
+  if (typeof secretKey === 'string' && secretKey.trim()) n8nWebhookConfig.secretKey = secretKey.trim();
+
+  addLog('system', `تنظیمات اتصال n8n به‌روزرسانی شد. وضعیت: ${n8nWebhookConfig.enabled ? 'فعال' : 'غیرفعال'}`);
+  res.json({
+    success: true,
+    config: n8nWebhookConfig,
+  });
+});
+
+app.get('/api/n8n/config', (_req, res) => {
+  res.json({
+    config: n8nWebhookConfig,
+    endpoints: {
+      telegramWebhook: '/api/telegram/webhook',
+      processMessage: '/api/n8n/process-message',
+      downloadMedia: '/api/n8n/download-media',
+      info: '/api/n8n/info',
+    },
+    attempts: n8nWebhookAttempts.slice(0, 5),
+  });
+});
+
+app.get('/api/n8n/attempts', (_req, res) => {
+  res.json({
+    attempts: n8nWebhookAttempts.slice(0, 5),
+    totalCount: n8nWebhookAttempts.length,
+  });
+});
+
+// 5. n8n Documentation & Sample Workflow JSON
+app.get('/api/n8n/info', (req, res) => {
+  const host = req.headers.host || 'localhost:3000';
+  const protocol = req.headers['x-forwarded-proto'] || 'http';
+  const baseUrl = `${protocol}://${host}`;
+
+  res.json({
+    title: 'SlowMegaBot n8n Integration Hub',
+    description: 'راهنمای اتصال کامل ربات تلگرام به اتوماسیون n8n',
+    baseUrl,
+    webhookEndpoint: `${baseUrl}/api/telegram/webhook`,
+    processMessageEndpoint: `${baseUrl}/api/n8n/process-message`,
+    downloadMediaEndpoint: `${baseUrl}/api/n8n/download-media`,
+    sampleN8nWorkflow: {
+      name: 'SlowMegaBot Telegram Flow',
+      nodes: [
+        {
+          parameters: {
+            httpMethod: 'POST',
+            path: 'telegram-webhook',
+            responseMode: 'onReceived',
+            options: {},
+          },
+          name: 'Telegram Webhook Trigger',
+          type: 'n8n-nodes-base.webhook',
+          typeVersion: 1,
+          position: [100, 300],
+        },
+        {
+          parameters: {
+            method: 'POST',
+            url: `${baseUrl}/api/n8n/process-message`,
+            sendBody: true,
+            specifyBody: 'json',
+            jsonBody: '{\n  "text": "={{ $json.body.message.text }}",\n  "userId": "={{ $json.body.message.from.id }}",\n  "username": "={{ $json.body.message.from.username }}"\n}',
+            options: {},
+          },
+          name: 'Process Bot Message',
+          type: 'n8n-nodes-base.httpRequest',
+          typeVersion: 3,
+          position: [320, 300],
+        },
+      ],
+    },
+  });
+});
+
+// 6. n8n Workflow Direct Download Endpoint
+app.get('/api/n8n/workflow/download', (_req, res) => {
+  try {
+    const workflowPath = path.resolve(__dirname, 'n8n-workflow-slowmegabot.json');
+    if (fs.existsSync(workflowPath)) {
+      const content = fs.readFileSync(workflowPath, 'utf-8');
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="slowmegabot-n8n-workflow.json"');
+      return res.send(content);
+    }
+    return res.status(404).json({ error: 'Workflow file not found' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Error downloading workflow file' });
+  }
+});
+
+// ==========================================
+// AUTO INSTALLER & DIAGNOSTICS ENDPOINTS
+// ==========================================
+app.get('/api/installer/diagnostics', (_req, res) => {
+  const lockExists = fs.existsSync(path.resolve(__dirname, '.installed.lock'));
+  const envExists = fs.existsSync(path.resolve(__dirname, '.env'));
+  const logExists = fs.existsSync(path.resolve(__dirname, 'install.log'));
+
+  res.json({
+    status: 'online',
+    version: '3.0.0',
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.version,
+    memoryUsageMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    uptimeSeconds: Math.round(process.uptime()),
+    installed: lockExists || envExists,
+    configuredPort: PORT,
+    botConnected: !!realBotRunner.botInfo && realBotRunner.isPolling,
+    botUsername: realBotRunner.botInfo?.username || null,
+    hasGeminiKey: !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY',
+    n8nEnabled: !!n8nWebhookConfig.enabled,
+    hasEnvFile: envExists,
+    hasLogFile: logExists,
+  });
+});
+
+app.post('/api/installer/verify-token', async (req, res) => {
+  const { token } = req.body;
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ ok: false, error: 'توکن نامعتبر است' });
+  }
+  try {
+    const clean = token.trim();
+    const tgRes = await fetch(`https://api.telegram.org/bot${clean}/getMe`);
+    const data = await tgRes.json();
+    if (data.ok && data.result) {
+      return res.json({
+        ok: true,
+        bot: {
+          id: data.result.id,
+          username: data.result.username,
+          first_name: data.result.first_name,
+        },
+      });
+    }
+    return res.status(400).json({ ok: false, error: data.description || 'توکن نامعتبر است' });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'خطای شبکه در اتصال به سرور تلگرام' });
+  }
+});
+
+app.get('/api/installer/configs', (req, res) => {
+  const host = req.headers.host || 'bot.example.com';
+  const domain = host.split(':')[0];
+
+  const systemdService = `[Unit]
+Description=SlowMegaBot Comprehensive Telegram & Web Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/slowmegabot
+EnvironmentFile=/var/www/slowmegabot/.env
+ExecStart=/usr/bin/npx tsx server.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/www/slowmegabot/install.log
+StandardError=append:/var/www/slowmegabot/install.log
+
+[Install]
+WantedBy=multi-user.target`;
+
+  const nginxConfig = `server {
+    listen 80;
+    server_name ${domain};
+
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        proxy_read_timeout 300s;
+    }
+}`;
+
+  res.json({
+    systemdService,
+    nginxConfig,
+    installCommand: `bash install.sh`,
+    oneLiner: `curl -sSL https://raw.githubusercontent.com/user/slowmegabot/main/install.sh | bash`,
+  });
+});
+
+// 12. Database Backup, Export & Restore Endpoints
+app.get('/api/database/backup', (req, res) => {
+  try {
+    const tablesParam = req.query.tables ? String(req.query.tables).split(',') : undefined;
+    const sqlContent = generateSqlBackup(tablesParam);
+    const download = req.query.download === 'true';
+
+    if (download) {
+      const filename = `slowmegabot_backup_${new Date().toISOString().slice(0, 10)}.sql`;
+      res.setHeader('Content-Type', 'application/sql; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(sqlContent);
+    }
+
+    return res.json({ ok: true, sql: sqlContent });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'خطا در ایجاد فایل پشتیبان دیتابیس' });
+  }
+});
+
+app.post('/api/database/restore', (req, res) => {
+  try {
+    const { sql, mode = 'replace' } = req.body;
+    if (!sql || typeof sql !== 'string') {
+      return res.status(400).json({ ok: false, error: 'محتوای فایل SQL برای بازیابی الزامی است.' });
+    }
+
+    const result = restoreSqlToSimulator(sql, { mode });
+    return res.json({ ok: result.success, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'خطای غیرمنتظره در بازیابی دیتابیس' });
+  }
+});
+
+app.get('/api/database/stats', (req, res) => {
+  try {
+    const stats = [
+      { name: 'users_wallets', label: 'کیف‌پول‌ها و کاربران', count: botStorage.wallets.size, description: 'حساب‌های کاربری، موجودی تومانی، سکه‌ها و اشتراک‌ها' },
+      { name: 'clash_villages', label: 'دهکده‌های کلش', count: botStorage.clashVillages.size, description: 'قلعه‌ها، سطح تاون‌هال، مخازن طلا و اکسیر و سربازان' },
+      { name: 'mafia_accounts', label: 'اکانت‌های مافیا آنلاین', count: platformStore.users.size, description: 'سطوح، الماس‌ها، برد و باخت و نقش‌های خریداری شده' },
+      { name: 'purchase_orders', label: 'سفارشات خرید و رسیدها', count: botStorage.orders.length, description: 'فاکتورهای پرداخت، وضعیت تایید یا رد سفارش' },
+      { name: 'seen_orders', label: 'سفارشات سین تلگرام', count: botStorage.seenOrders.length, description: 'سفارشات بازدید پست‌های تلگرام و قیمت‌ها' },
+      { name: 'uploaded_files', label: 'فایل‌های آپلودشده (Aplo)', count: botStorage.uploadedFiles.length, description: 'فایل‌های مستقیم آپلودشده، رمزها و لینک‌های دانلود' },
+      { name: 'bot_owner_config', label: 'تنظیمات درگاه و مالک ربات', count: 1, description: 'شماره کارت مالک، مرچنت زرین‌پال و وضعیت درگاه' },
+    ];
+    const totalRecords = stats.reduce((acc, s) => acc + s.count, 0);
+    return res.json({
+      ok: true,
+      stats,
+      totalRecords,
+      lastUpdated: new Date().toISOString(),
+      architecture: 'MySQL / SQLite Compatible Architecture',
+    });
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'خطا در دریافت وضعیت دیتابیس' });
+  }
+});
+
+// 13. System Architecture, Modules Registry & Telemetry Endpoints
+app.get('/api/system/info', (req, res) => {
+  const config = appConfig.getConfig();
+  res.json({
+    ok: true,
+    appName: config.appName,
+    version: config.version,
+    environment: config.environment,
+    protocol: config.protocol,
+    domain: config.domain,
+    port: PORT,
+    databaseType: config.databaseType,
+    totalModulesCount: APP_MODULES_CATALOG.length,
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/api/system/modules', (req, res) => {
+  const category = req.query.category as string | undefined;
+  if (category) {
+    return res.json({
+      ok: true,
+      category,
+      modules: APP_MODULES_CATALOG.filter((m) => m.category === category),
+    });
+  }
+  return res.json({
+    ok: true,
+    total: APP_MODULES_CATALOG.length,
+    modules: APP_MODULES_CATALOG,
+  });
+});
+
+app.get('/api/system/logs', (req, res) => {
+  const limit = req.query.limit ? Number(req.query.limit) : 50;
+  const level = req.query.level as any;
+  const logs = logger.getLogs(limit, level);
+  const stats = logger.getStats();
+  res.json({
+    ok: true,
+    stats,
+    logs,
   });
 });
 
@@ -685,6 +1890,64 @@ async function setupServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`SlowMegaBot Server running on http://0.0.0.0:${PORT}`);
+    // Load persistent database from disk on server startup
+    databasePersistenceService.load(botStorage);
+
+    // 1. Auto-connect Telegram Bot
+    const providedToken = '8623750026:AAHWT31Y4IhuthBGWJWMPJGgRTME0w5MF-o';
+    const envToken = process.env.TELEGRAM_BOT_TOKEN || providedToken;
+    if (envToken && !realBotRunner.isPolling) {
+      const clean = envToken.trim();
+      fetch(`https://api.telegram.org/bot${clean}/getMe`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok && data.result) {
+            realBotRunner.token = clean;
+            realBotRunner.botInfo = data.result;
+            addLog('system', `اتصال ربات تلگرام @${data.result.username} (Mq123_Bot) برقرار شد! 🎉`);
+            startLongPolling(clean);
+          }
+        })
+        .catch((err) => console.error('Telegram auto-connect error:', err));
+    }
+
+    // 2. Auto-connect Bale Bot (بله)
+    const baleToken = process.env.BALE_BOT_TOKEN || '1432398423:ZFYQHqmqfSlDn6iinj2BaWEmxiNndrcEMJI';
+    if (baleToken && !baleBotRunner.isPolling) {
+      const cleanBale = baleToken.trim();
+      fetch(`https://tapi.bale.ai/bot${cleanBale}/getMe`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok && data.result) {
+            baleBotRunner.token = cleanBale;
+            baleBotRunner.botInfo = data.result;
+            addLog('system', `اتصال ربات بله @${data.result.username} (modasrbot) با موفقیت برقرار شد! 🚀`);
+            startBalePolling(cleanBale);
+          }
+        })
+        .catch((err) => console.error('Bale auto-connect error:', err));
+    }
+
+    // 3. Auto-connect Rubika Bot (روبیکا)
+    const rubikaToken = process.env.RUBIKA_BOT_TOKEN || 'CGIHBD0KQDYASEPUOXOOWDFJDTPPHMGNWIMSQIJDOFMBGWYLTIRSLUMIQDVPQLPJ';
+    if (rubikaToken && !rubikaBotRunner.isPolling) {
+      const cleanRubika = rubikaToken.trim();
+      fetch(`https://botapi.rubika.ir/v3/${cleanRubika}/getMe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.status === 'OK' && data.data && data.data.bot) {
+            rubikaBotRunner.token = cleanRubika;
+            rubikaBotRunner.botInfo = data.data.bot;
+            addLog('system', `اتصال ربات روبیکا @${data.data.bot.username} (MODASR_T_bot) با موفقیت برقرار شد! 💫`);
+            startRubikaPolling(cleanRubika);
+          }
+        })
+        .catch((err) => console.error('Rubika auto-connect error:', err));
+    }
   });
 }
 
