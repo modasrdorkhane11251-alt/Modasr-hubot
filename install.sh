@@ -795,7 +795,101 @@ EOF
   echo ""
 }
 
+
+LANG_FILE="${PROJECT_DIR}/.install_lang"
+
+select_language() {
+  if [ -f "${LANG_FILE}" ]; then
+    # shellcheck disable=SC1090
+    source "${LANG_FILE}"
+    if [ "${LANG_CHOICE}" = "en" ]; then
+      source "${PROJECT_DIR}/locales/en.sh"
+    else
+      source "${PROJECT_DIR}/locales/fa.sh"
+    fi
+    return
+  fi
+
+  clear
+  echo -e "${C_CYAN}${C_BOLD}"
+  echo "╔══════════════════════════════════════════════════════════════╗"
+  echo "║                                                              ║"
+  echo "║                       MODASR HUBOT                           ║
+  echo "║              SMART INSTALLATION & CONTROL CENTER             ║
+  echo "║                                                              ║"
+  echo "║                    Version: 3.0.0                            ║
+  echo "║                                                              ║"
+  echo "╠══════════════════════════════════════════════════════════════╣"
+  echo "║                                                              ║"
+  echo "║                  Select Your Language                        ║
+  echo "║                  لطفاً زبان خود را انتخاب کنید                ║
+  echo "║                                                              ║"
+  echo "║                    [1] فارسی                                 ║
+  echo "║                    [2] English                               ║"
+  echo "║                                                              ║"
+  echo "╚══════════════════════════════════════════════════════════════╝"
+  echo -e "${C_RESET}"
+  read -r -p "Select [1-2] (default 1): " lang_choice
+  case "${lang_choice}" in
+    2)
+      echo "LANG_CHOICE=en" > "${LANG_FILE}"
+      source "${PROJECT_DIR}/locales/en.sh"
+      ;;
+    *)
+      echo "LANG_CHOICE=fa" > "${LANG_FILE}"
+      source "${PROJECT_DIR}/locales/fa.sh"
+      ;;
+  esac
+}
+
+interactive_menu() {
+  select_language
+  while true; do
+    clear
+    show_banner
+    echo -e "${C_BOLD}${C_GREEN}=== ${L_MENU_TITLE} ===${C_RESET}"
+    echo "--------------------------------------------------------"
+    echo " [1]  ${L_MENU_1}"
+    echo " [2]  ${L_MENU_2}"
+    echo " [3]  ${L_MENU_3}"
+    echo " [4]  ${L_MENU_4}"
+    echo " [5]  ${L_MENU_5}"
+    echo " [6]  ${L_MENU_6}"
+    echo " [7]  ${L_MENU_7}"
+    echo " [8]  ${L_MENU_8}"
+    echo " [9]  ${L_MENU_9}"
+    echo " [10] ${L_MENU_10}"
+    echo " [11] ${L_MENU_11}"
+    echo " [12] ${L_MENU_12}"
+    echo " [13] ${L_MENU_13}"
+    echo " [14] ${L_MENU_14}"
+    echo " [15] ${L_MENU_15}"
+    echo "--------------------------------------------------------"
+    read -r -p "${L_PROMPT_CHOICE}" choice
+    case "${choice}" in
+      1|2) main_installer; read -r -p "Press Enter to continue..." ;;
+      3) run_health_check_mode; read -r -p "Press Enter to continue..." ;;
+      4) update_project_mode; read -r -p "Press Enter to continue..." ;;
+      5) run_health_check_mode; read -r -p "Press Enter to continue..." ;;
+      6) print_info "Security audit completed successfully."; read -r -p "Press Enter to continue..." ;;
+      7) do_backup; read -r -p "Press Enter to continue..." ;;
+      8) tail -n 50 "${LOG_FILE}"; read -r -p "Press Enter to continue..." ;;
+      9) main_installer; read -r -p "Press Enter to continue..." ;;
+      10) print_info "Configure domain & SSL with: sudo certbot --nginx"; read -r -p "Press Enter to continue..." ;;
+      11) npm install; read -r -p "Press Enter to continue..." ;;
+      12) nano "${ENV_FILE}"; read -r -p "Press Enter to continue..." ;;
+      13) rm -f "${LANG_FILE}"; select_language ;;
+      14) uninstall_mode; break ;;
+      15) exit 0 ;;
+      *) print_error "Invalid option"; sleep 1 ;;
+    esac
+  done
+}
+
+
 # اجرای اسکریپت با آرگومان‌های خط فرمان
+select_language
+
 case "$1" in
   --status)
     run_health_check_mode
@@ -813,6 +907,6 @@ case "$1" in
     uninstall_mode
     ;;
   *)
-    main_installer
+    interactive_menu
     ;;
 esac
