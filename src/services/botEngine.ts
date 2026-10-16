@@ -789,7 +789,7 @@ export async function handleTelegramIncomingMessage(
   }
 
   if (trimmed === '🎮 بازی مافیا') {
-    return handleMafiaMenu(chatId, user);
+    return handleMafiaMenu(chatId, user, user.platform || 'telegram');
   }
 
   if (trimmed === '/bet' || trimmed === '🚀 بت و انفجار') {
@@ -1018,35 +1018,42 @@ export function handleToolsCategoryMenu(chatId: number, user: TelegramUser): Bot
   ];
 }
 
-export function handleMafiaMenu(chatId: number, user: TelegramUser): BotResponse[] {
+export function handleMafiaMenu(chatId: number, user: TelegramUser, platform: string = 'telegram'): BotResponse[] {
+  const appUrl = process.env.APP_URL || 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app';
+  const webAppUrl = `${appUrl}/mafia-webapp`;
+
+  let webAppButton: any;
+  if (platform === 'telegram' || platform === 'bale') {
+    webAppButton = { text: '🎮 ورود به بازی مافیا آنلاین (Mini App)', web_app: { url: webAppUrl } };
+  } else {
+    webAppButton = { text: '🎮 ورود به بازی مافیا آنلاین (Mini App)', url: webAppUrl };
+  }
+
   const game = activeMafiaGames.get(chatId);
   const statusText = game
     ? `🏆 یک بازی در جریان است (حالت ${game.mode} نفره | فاز: ${game.phase === 'lobby' ? 'لابی' : game.phase === 'night' ? '🌑 شب' : game.phase === 'trial' ? '⚖️ دادگاه' : '☀️ روز'} - روز ${game.dayCount} - ${game.players.filter((p) => p.isAlive).length} بازیکن زنده)`
-    : `هیچ بازی فعالی در این چت نیست. می‌توانید لابی ۹ یا ۱۲ نفره بسازید:`;
+    : `هیچ بازی فعالی در این چت نیست. می‌توانید وارد وب‌اپ Mini App یا لابی شوید:`;
 
   return [
     {
       chatId,
-      text: `🎩 *موتور رسمی بازی مافیا (PUBLIC/beta ( mafia ))*\n\n` +
+      text: `🎩 *موتور رسمی و وب‌اپ بازی مافیا آنلاین (Mafia Mini App)*\n\n` +
         `${statusText}\n\n` +
-        `🎭 **سناریوی ۹ نفره (9-player-game.php):**\n` +
-        `• مافیا (۲ نفر): گادپدر 🎩 + مافیای ساده 🕶️\n` +
-        `• شهروند (۷ نفر): دکتر 👨‍⚕️، کارآگاه 🔍، اسنایپر 🎯، زره‌پوش 🛡️، کشیش ⛪، ۲ شهروند 👥\n\n` +
-        `🎭 **سناریوی ۱۲ نفره (12-player-game.php):**\n` +
-        `• مافیا (۳ نفر): گادپدر 🎩، دکتر لکتور 💉، مافیای ساده 🕶️\n` +
-        `• شهروند (۹ نفر): دکتر 👨‍⚕️، کارآگاه 🔍، اسنایپر 🎯، زره‌پوش 🛡️، تفنگدار 🔫، کشیش ⛪، ۳ شهروند 👥\n\n` +
-        `_یکی از سناریوها را برای بازی انتخاب کنید:_`,
+        `🎭 **ویژگی‌های مافیا آنلاین WebApp:**\n` +
+        `• چت صوتی زنده با WebRTC و STUN سرور\n` +
+        `• سناریوهای استاندارد ۹ و ۱۲ نفره شبکه\n` +
+        `• جدول وضعیت صندلی‌ها و شبیه‌سازی لابی\n\n` +
+        `👇 جهت ورود مستقیم به Mini App روی دکمه زیر کلیک کنید:`,
       reply_markup: {
         inline_keyboard: [
+          [webAppButton],
           [
-            { text: '⚡ شروع بازی ۹ نفره (با ۸ بازیکن هوشمند)', callback_data: 'cb_mafia_start_9' },
+            { text: '⚡ لابی ۹ نفره در چت', callback_data: 'cb_mafia_start_9' },
+            { text: '⚡ لابی ۱۲ نفره در چت', callback_data: 'cb_mafia_start_12' },
           ],
           [
-            { text: '⚡ شروع بازی ۱۲ نفره (با ۱۱ بازیکن هوشمند)', callback_data: 'cb_mafia_start_12' },
-          ],
-          [
-            { text: '📋 جدول وضعیت صندلی‌ها (table.php)', callback_data: 'cb_mafia_table' },
-            { text: '📜 راهنمای کامل نقش‌ها', callback_data: 'cb_mafia_roles_help' },
+            { text: '📋 وضعیت صندلی‌ها', callback_data: 'cb_mafia_table' },
+            { text: '📜 راهنمای نقش‌ها', callback_data: 'cb_mafia_roles_help' },
           ],
           [{ text: '🔙 بازگشت به منوی اصلی', callback_data: 'cb_main_menu' }],
         ],
@@ -2734,7 +2741,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   // MAFIA CALLBACKS
   if (data === 'cb_mafia_menu') {
-    return handleMafiaMenu(chatId, user);
+    return handleMafiaMenu(chatId, user, user.platform || 'telegram');
   }
 
   if (data === 'cb_mafia_start_9' || data === 'cb_mafia_quick_start_9' || data === 'cb_mafia_create_9') {
@@ -2800,7 +2807,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   if (data === 'cb_mafia_table') {
     const game = activeMafiaGames.get(chatId);
-    if (!game) return handleMafiaMenu(chatId, user);
+    if (!game) return handleMafiaMenu(chatId, user, user.platform || 'telegram');
     const tableText = MafiaEngine.generateStatusTable(game);
     return [
       {
@@ -2841,7 +2848,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   if (data === 'cb_mafia_act_night') {
     const game = activeMafiaGames.get(chatId);
-    if (!game) return handleMafiaMenu(chatId, user);
+    if (!game) return handleMafiaMenu(chatId, user, user.platform || 'telegram');
     const userPlayer = game.players[0];
     if (!userPlayer || !userPlayer.isAlive) {
       return [{ chatId, text: '💀 شما در این بازی زنده نیستید!' }];
@@ -3032,7 +3039,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   if (data === 'cb_mafia_voice_enter') {
     const game = activeMafiaGames.get(chatId);
-    if (!game) return handleMafiaMenu(chatId, user);
+    if (!game) return handleMafiaMenu(chatId, user, user.platform || 'telegram');
     MafiaEngine.toggleVoiceCall(chatId, true);
     return [
       {
@@ -3055,7 +3062,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   if (data === 'cb_mafia_debate_trigger') {
     const game = activeMafiaGames.get(chatId);
-    if (!game) return handleMafiaMenu(chatId, user);
+    if (!game) return handleMafiaMenu(chatId, user, user.platform || 'telegram');
     const speeches = MafiaEngine.simulateBotSpeeches(chatId);
 
     const speechSummary = speeches
@@ -3079,7 +3086,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   if (data === 'cb_mafia_start_voting') {
     const game = activeMafiaGames.get(chatId);
-    if (!game) return handleMafiaMenu(chatId, user);
+    if (!game) return handleMafiaMenu(chatId, user, user.platform || 'telegram');
     const alivePlayers = game.players.filter((p) => p.isAlive);
 
     return [

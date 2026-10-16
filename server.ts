@@ -1,3 +1,5 @@
+import { authenticateWebAppUser, buildWebAppButton } from './src/services/webAppAuth';
+import { platformStore } from './src/services/platformStore';
 import { databasePersistenceService } from './src/services/databasePersistenceService';
 // Sanitize input strings for special characters (<, >, &) and unclosed entity tags that break Telegram parsing
 import { sanitizeTelegramMessage } from './src/services/botEngine';
@@ -1982,6 +1984,91 @@ app.get('/api/system/logs', (req, res) => {
     stats,
     logs,
   });
+});
+
+// ==========================================
+// MAFIA WEBAPP (Mini App) ENDPOINTS
+// ==========================================
+app.post('/api/webapp/auth', (req, res) => {
+  const { platform, initData } = req.body;
+  const targetPlatform = ['telegram', 'bale', 'rubika'].includes(platform) ? platform : 'telegram';
+
+  const result = authenticateWebAppUser(targetPlatform as any, String(initData || ''), {
+    telegram: realBotRunner.token || process.env.TELEGRAM_BOT_TOKEN || '',
+    bale: baleBotRunner.token || process.env.BALE_BOT_TOKEN || '',
+    rubika: rubikaBotRunner.token || process.env.RUBIKA_BOT_TOKEN || '',
+  });
+
+  if (!result.ok || !result.user) {
+    return res.status(401).json(result);
+  }
+
+  const userId = `${targetPlatform}_${result.user.id}`;
+  let platformUser = platformStore.getUser(userId);
+
+  if (!platformUser) {
+    platformUser = {
+      id: userId,
+      username: result.user.username || `wa_${result.user.id}`,
+      displayName: result.user.firstName,
+      avatarUrl: '',
+      avatarEmoji: '🎭',
+      level: 1,
+      xp: 0,
+      coins: 1000,
+      diamonds: 10,
+      points: 50,
+      gamesPlayed: 0,
+      gamesWon: 0,
+      gamesLost: 0,
+      winRate: 0,
+      league: 'bronze',
+      ownedRoleIds: ['godfather', 'notche', 'citizen', 'doctor', 'detective', 'sniper'],
+      friends: [],
+      blockedUsers: [],
+      isAdmin: false,
+      createdAt: new Date().toISOString(),
+    };
+    platformStore.users.set(userId, platformUser);
+  }
+
+  botStorage.recordUserActivity(
+    targetPlatform as any,
+    {
+      id: result.user.id,
+      first_name: result.user.firstName,
+      username: result.user.username,
+    },
+    'ورود به بازی مافیا از طریق WebApp Mini App'
+  );
+
+  databasePersistenceService.scheduleSave(botStorage, platformStore);
+
+  res.json({ ok: true, user: result.user, platformUser });
+});
+
+app.get('/api/webapp/rooms', (_req, res) => {
+  const activeRooms = Array.from(platformStore.rooms.values())
+    .filter((r: any) => r.currentPhase === 'lobby' || r.currentPhase === 'playing')
+    .map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      scenario: r.selectedScenario,
+      hostName: platformStore.users.get(r.hostUserId)?.displayName || 'میزبان',
+      playersCount: r.participants?.length || 0,
+      maxPlayers: r.maxPlayers,
+      status: r.currentPhase,
+      isPrivate: r.isPrivate,
+    }));
+  res.json({ ok: true, rooms: activeRooms });
+});
+
+app.get(['/mafia-webapp', '/mafia-webapp.html'], (_req, res) => {
+  const htmlPath = path.resolve(__dirname, 'mafia-webapp.html');
+  if (fs.existsSync(htmlPath)) {
+    return res.sendFile(htmlPath);
+  }
+  res.status(404).send('فایل WebApp مافیا یافت نشد.');
 });
 
 // Vite / Static Files Middleware setup

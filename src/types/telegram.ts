@@ -4,6 +4,7 @@ export interface TelegramUser {
   last_name?: string;
   username?: string;
   is_bot?: boolean;
+  platform?: 'telegram' | 'bale' | 'rubika' | 'simulator';
 }
 
 export interface TelegramChat {
