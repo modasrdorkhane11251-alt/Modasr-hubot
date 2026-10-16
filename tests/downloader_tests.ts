@@ -1,3 +1,4 @@
+import { authenticateWebAppUser, buildWebAppButton } from '../src/services/webAppAuth';
 import { validateMediaUrl, handleUniversalDownloader } from '../src/services/botEngine';
 import { fetchUniversalDownload, stripTrackingParams, normalizeShortenedUrl } from '../src/services/realApis';
 
@@ -74,6 +75,24 @@ console.log('\n7. Testing Message With Multiple URLs & Tracking Params:');
 const multiMsg = 'ببین این دوتا ویدیو چقدر خوبند https://www.youtube.com/watch?v=dQw4w9WgXcQ?utm_source=tg و همچنین https://www.instagram.com/reel/DeeiCBGgKjr/?igsh=abc123xyz';
 const respMulti = handleUniversalDownloader(12345, dummyUser, multiMsg);
 assert(respMulti.length > 0, 'Should successfully process message with multiple URLs');
+
+
+// Test 8: WebApp Auth & Button Generation Tests
+console.log('\n8. Testing WebApp HMAC Auth & Button Generation:');
+const authTgGuest = authenticateWebAppUser('telegram', '');
+assert(authTgGuest.ok === true && authTgGuest.user?.platform === 'telegram', 'Telegram guest auth should succeed');
+
+const authBaleGuest = authenticateWebAppUser('bale', '');
+assert(authBaleGuest.ok === true && authBaleGuest.user?.platform === 'bale', 'Bale guest auth should succeed');
+
+const authRubikaGuest = authenticateWebAppUser('rubika', '');
+assert(authRubikaGuest.ok === true && authRubikaGuest.user?.platform === 'rubika', 'Rubika guest auth should succeed');
+
+const btnTg = buildWebAppButton('telegram', 'https://example.com');
+assert(Boolean(btnTg.web_app && btnTg.web_app.url.includes('/mafia-webapp')), 'Telegram button should include web_app object');
+
+const btnRubika = buildWebAppButton('rubika', 'https://example.com');
+assert(Boolean(btnRubika.url && btnRubika.url.includes('/mafia-webapp')), 'Rubika button should include direct url');
 
 console.log('\n========================================');
 console.log(`TEST RESULTS: ${passedTests}/${totalTests} TESTS PASSED.`);

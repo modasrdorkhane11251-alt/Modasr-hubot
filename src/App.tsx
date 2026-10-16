@@ -367,7 +367,7 @@ export default function App() {
     try {
       const res = await fetch('/api/bot/token/connect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': 'slowmega_admin_secret_key_2026' },
         body: JSON.stringify({ token }),
       });
       const data = await res.json();
@@ -386,7 +386,7 @@ export default function App() {
   // Disconnect Real Bot
   const handleDisconnectRealBot = async () => {
     try {
-      await fetch('/api/bot/token/disconnect', { method: 'POST' });
+      await fetch('/api/bot/token/disconnect', { method: 'POST', headers: { 'X-Admin-Key': 'slowmega_admin_secret_key_2026' } });
       setConnectedBot(null);
       setIsPolling(false);
       fetchBotStatus();

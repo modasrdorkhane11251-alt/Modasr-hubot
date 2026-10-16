@@ -82,7 +82,7 @@ export const AutoInstallerModal: React.FC<Props> = ({ isOpen, onClose }) => {
 
   const fetchConfigs = async () => {
     try {
-      const res = await fetch('/api/installer/configs');
+      const res = await fetch('/api/installer/configs', { headers: { 'X-Admin-Key': 'slowmega_admin_secret_key_2026' } });
       if (res.ok) {
         const data = await res.json();
         setConfigs(data);

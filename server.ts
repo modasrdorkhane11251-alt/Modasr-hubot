@@ -1,3 +1,4 @@
+import { requireAdmin, requireTelegramSecret, requireN8nSecret, rateLimit } from './src/middleware/security';
 import { authenticateWebAppUser, buildWebAppButton } from './src/services/webAppAuth';
 import { platformStore } from './src/services/platformStore';
 import { databasePersistenceService } from './src/services/databasePersistenceService';
@@ -1325,7 +1326,7 @@ interface WebRtcSignal {
 }
 const roomSignallingMap: Map<string, WebRtcSignal[]> = new Map();
 
-app.post('/api/platform/webrtc/signal', (req, res) => {
+app.post('/api/platform/webrtc/signal', rateLimit({ windowMs: 10000, max: 30 }), (req, res) => {
   const { roomId, senderId, senderSeat, type, payload } = req.body;
   if (!roomSignallingMap.has(roomId)) {
     roomSignallingMap.set(roomId, []);
@@ -1336,7 +1337,7 @@ app.post('/api/platform/webrtc/signal', (req, res) => {
   res.json({ success: true, totalSignals: signals.length });
 });
 
-app.get('/api/platform/webrtc/signals', (req, res) => {
+app.get('/api/platform/webrtc/signals', rateLimit({ windowMs: 10000, max: 30 }), (req, res) => {
   const roomId = String(req.query.roomId || '');
   const signals = roomSignallingMap.get(roomId) || [];
   res.json({ signals });
@@ -1350,7 +1351,7 @@ app.get('/api/platform/transactions', (req, res) => {
 });
 
 // Bot Dispatch Route
-app.post('/api/bot/dispatch', async (req, res) => {
+app.post('/api/bot/dispatch', rateLimit({ windowMs: 60000, max: 60 }), async (req, res) => {
   const { type, user, chatId, text, callbackData, message } = req.body;
   const defaultUser: TelegramUser = user || {
     id: 12345678,
@@ -1378,7 +1379,7 @@ app.post('/api/bot/dispatch', async (req, res) => {
   }
 });
 
-app.get('/api/bot/state', (req, res) => {
+app.get('/api/bot/state', requireAdmin, (req, res) => {
   const userId = Number(req.query.userId) || 12345678;
   const wallet = botStorage.getWallet(userId);
   const clash = botStorage.getClashVillage(userId, 'فرمانده');
@@ -1395,7 +1396,7 @@ app.get('/api/bot/state', (req, res) => {
   });
 });
 
-app.post('/api/bot/token/connect', async (req, res) => {
+app.post('/api/bot/token/connect', requireAdmin, async (req, res) => {
   const { token } = req.body;
   if (!token || typeof token !== 'string') {
     return res.status(400).json({ ok: false, error: 'توکن نامعتبر است.' });
@@ -1436,7 +1437,7 @@ app.post('/api/bot/token/connect', async (req, res) => {
   }
 });
 
-app.post('/api/bot/token/disconnect', (req, res) => {
+app.post('/api/bot/token/disconnect', requireAdmin, (req, res) => {
   stopLongPolling();
   realBotRunner.token = '';
   realBotRunner.botInfo = null;
@@ -1446,7 +1447,7 @@ app.post('/api/bot/token/disconnect', (req, res) => {
 
 
 // Get all saved bot users across Telegram, Bale, Rubika, and Simulator
-app.get('/api/bot/users', (_req, res) => {
+app.get('/api/bot/users', requireAdmin, (_req, res) => {
   const users = Array.from(botStorage.users.values());
   res.json({
     ok: true,
@@ -1586,7 +1587,7 @@ async function sendToN8n(event: string, payload: any) {
 }
 
 // 1. Standard Telegram Webhook for n8n or direct Telegram webhook
-app.post('/api/telegram/webhook', async (req, res) => {
+app.post('/api/telegram/webhook', requireTelegramSecret, async (req, res) => {
   try {
     const update: TelegramUpdate = req.body;
     if (!update) {
@@ -1638,7 +1639,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
 });
 
 // 2. Direct n8n Message Execution API (HTTP Request Node target)
-app.post('/api/n8n/process-message', async (req, res) => {
+app.post('/api/n8n/process-message', requireN8nSecret, async (req, res) => {
   try {
     const { text, userId, username, firstName, chatId } = req.body;
     const user: TelegramUser = {
@@ -1665,7 +1666,7 @@ app.post('/api/n8n/process-message', async (req, res) => {
 });
 
 // 3. Direct n8n Media Downloader API
-app.post('/api/n8n/download-media', async (req, res) => {
+app.post('/api/n8n/download-media', requireN8nSecret, async (req, res) => {
   try {
     const { url } = req.body;
     if (!url) {
@@ -1684,7 +1685,7 @@ app.post('/api/n8n/download-media', async (req, res) => {
 });
 
 // 4. n8n Webhook Settings Endpoint
-app.post('/api/n8n/config', (req, res) => {
+app.post('/api/n8n/config', requireAdmin, (req, res) => {
   const { n8nWebhookUrl, enabled, secretKey } = req.body;
   if (typeof n8nWebhookUrl === 'string') n8nWebhookConfig.n8nWebhookUrl = n8nWebhookUrl.trim();
   if (typeof enabled === 'boolean') n8nWebhookConfig.enabled = enabled;
@@ -1697,7 +1698,7 @@ app.post('/api/n8n/config', (req, res) => {
   });
 });
 
-app.get('/api/n8n/config', (_req, res) => {
+app.get('/api/n8n/config', requireAdmin, (_req, res) => {
   res.json({
     config: n8nWebhookConfig,
     endpoints: {
@@ -1832,7 +1833,7 @@ app.post('/api/installer/verify-token', async (req, res) => {
   }
 });
 
-app.get('/api/installer/configs', (req, res) => {
+app.get('/api/installer/configs', requireAdmin, (req, res) => {
   const host = req.headers.host || 'bot.example.com';
   const domain = host.split(':')[0];
 
@@ -1883,7 +1884,7 @@ WantedBy=multi-user.target`;
 });
 
 // 12. Database Backup, Export & Restore Endpoints
-app.get('/api/database/backup', (req, res) => {
+app.get('/api/database/backup', requireAdmin, (req, res) => {
   try {
     const tablesParam = req.query.tables ? String(req.query.tables).split(',') : undefined;
     const sqlContent = generateSqlBackup(tablesParam);
@@ -1902,7 +1903,7 @@ app.get('/api/database/backup', (req, res) => {
   }
 });
 
-app.post('/api/database/restore', (req, res) => {
+app.post('/api/database/restore', requireAdmin, (req, res) => {
   try {
     const { sql, mode = 'replace' } = req.body;
     if (!sql || typeof sql !== 'string') {
@@ -1989,7 +1990,7 @@ app.get('/api/system/logs', (req, res) => {
 // ==========================================
 // MAFIA WEBAPP (Mini App) ENDPOINTS
 // ==========================================
-app.post('/api/webapp/auth', (req, res) => {
+app.post('/api/webapp/auth', rateLimit({ windowMs: 60000, max: 20 }), (req, res) => {
   const { platform, initData } = req.body;
   const targetPlatform = ['telegram', 'bale', 'rubika'].includes(platform) ? platform : 'telegram';
 

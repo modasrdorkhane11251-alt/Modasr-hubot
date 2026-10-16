@@ -190,7 +190,7 @@ export function DatabaseBackupManager({
       try {
         const res = await fetch('/api/database/restore', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Key': 'slowmega_admin_secret_key_2026' },
           body: JSON.stringify({ sql: restoreSqlText, mode: restoreMode }),
         });
         if (res.ok) {
