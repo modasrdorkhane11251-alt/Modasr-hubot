@@ -112,6 +112,12 @@ function checkRateLimit(ip: string, limit = 60, windowMs = 60000): boolean {
 }
 
 const app = express();
+app.set('trust proxy', 1);
+
+// Security Rate Limiters
+const authRateLimiter = rateLimit({ windowMs: 60000, max: 10 });
+const mafiaRateLimiter = rateLimit({ windowMs: 60000, max: 60 });
+const webrtcRateLimiter = rateLimit({ windowMs: 60000, max: 120 });
 
 // Direct download route for MODASR_FULL_PROJECT_CURRENT.zip
 app.get(['/download/MODASR_FULL_PROJECT_CURRENT.zip', '/MODASR_FULL_PROJECT_CURRENT.zip'], (_req, res) => {
@@ -1168,7 +1174,7 @@ app.get('/api/mafia/state', (req, res) => {
   res.json({ game, catalog: MAFIA_ROLES_CATALOG });
 });
 
-app.post('/api/mafia/start', (req, res) => {
+app.post('/api/mafia/start', mafiaRateLimiter, (req, res) => {
   const { chatId, mode } = req.body;
   const targetChatId = Number(chatId) || 12345678;
   const targetMode = mode === 12 ? 12 : 9;
@@ -1177,7 +1183,7 @@ app.post('/api/mafia/start', (req, res) => {
   res.json({ game, catalog: MAFIA_ROLES_CATALOG });
 });
 
-app.post('/api/mafia/action', (req, res) => {
+app.post('/api/mafia/action', mafiaRateLimiter, (req, res) => {
   const { chatId, actorId, action, targetSeatNumber } = req.body;
   const targetChatId = Number(chatId) || 12345678;
   const result = MafiaEngine.performNightAction(targetChatId, Number(actorId), action, Number(targetSeatNumber));
@@ -1191,7 +1197,7 @@ app.post('/api/mafia/advance-day', (req, res) => {
   res.json(result);
 });
 
-app.post('/api/mafia/vote', (req, res) => {
+app.post('/api/mafia/vote', mafiaRateLimiter, (req, res) => {
   const { chatId, voterId, targetSeatNumber } = req.body;
   const targetChatId = Number(chatId) || 12345678;
   const game = MafiaEngine.voteForPlayer(targetChatId, Number(voterId), Number(targetSeatNumber));
@@ -1326,7 +1332,7 @@ interface WebRtcSignal {
 }
 const roomSignallingMap: Map<string, WebRtcSignal[]> = new Map();
 
-app.post('/api/platform/webrtc/signal', rateLimit({ windowMs: 10000, max: 30 }), (req, res) => {
+app.post('/api/platform/webrtc/signal', webrtcRateLimiter, (req, res) => {
   const { roomId, senderId, senderSeat, type, payload } = req.body;
   if (!roomSignallingMap.has(roomId)) {
     roomSignallingMap.set(roomId, []);
@@ -1337,7 +1343,7 @@ app.post('/api/platform/webrtc/signal', rateLimit({ windowMs: 10000, max: 30 }),
   res.json({ success: true, totalSignals: signals.length });
 });
 
-app.get('/api/platform/webrtc/signals', rateLimit({ windowMs: 10000, max: 30 }), (req, res) => {
+app.get('/api/platform/webrtc/signals', webrtcRateLimiter, (req, res) => {
   const roomId = String(req.query.roomId || '');
   const signals = roomSignallingMap.get(roomId) || [];
   res.json({ signals });
@@ -1692,15 +1698,17 @@ app.post('/api/n8n/config', requireAdmin, (req, res) => {
   if (typeof secretKey === 'string' && secretKey.trim()) n8nWebhookConfig.secretKey = secretKey.trim();
 
   addLog('system', `تنظیمات اتصال n8n به‌روزرسانی شد. وضعیت: ${n8nWebhookConfig.enabled ? 'فعال' : 'غیرفعال'}`);
+  const { secretKey: _secret, ...safeConfig } = n8nWebhookConfig;
   res.json({
     success: true,
-    config: n8nWebhookConfig,
+    config: safeConfig,
   });
 });
 
 app.get('/api/n8n/config', requireAdmin, (_req, res) => {
+  const { secretKey: _secret, ...safeConfig } = n8nWebhookConfig;
   res.json({
-    config: n8nWebhookConfig,
+    config: safeConfig,
     endpoints: {
       telegramWebhook: '/api/telegram/webhook',
       processMessage: '/api/n8n/process-message',
@@ -1990,7 +1998,7 @@ app.get('/api/system/logs', (req, res) => {
 // ==========================================
 // MAFIA WEBAPP (Mini App) ENDPOINTS
 // ==========================================
-app.post('/api/webapp/auth', rateLimit({ windowMs: 60000, max: 20 }), (req, res) => {
+app.post('/api/webapp/auth', authRateLimiter, (req, res) => {
   const { platform, initData } = req.body;
   const targetPlatform = ['telegram', 'bale', 'rubika'].includes(platform) ? platform : 'telegram';
 
@@ -2106,6 +2114,21 @@ async function setupServer() {
             realBotRunner.token = clean;
             realBotRunner.botInfo = data.result;
             addLog('system', `اتصال ربات تلگرام @${data.result.username} (Mq123_Bot) برقرار شد! 🎉`);
+
+            if (process.env.NODE_ENV === 'production' && process.env.TELEGRAM_WEBHOOK_URL && envToken) {
+              const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
+              const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
+              if (secret) {
+                fetch(`https://api.telegram.org/bot${envToken}/setWebhook?url=${encodeURIComponent(webhookUrl)}&secret_token=${encodeURIComponent(secret)}`)
+                  .then(r => r.json())
+                  .then(data => {
+                    if (data.ok) console.log('[SECURITY] Telegram webhook با secret ثبت شد');
+                    else console.error('[SECURITY] خطا در ثبت webhook:', data.description);
+                  })
+                  .catch(err => console.error('[SECURITY] webhook error:', err));
+              }
+            }
+
             startLongPolling(clean);
           }
         })

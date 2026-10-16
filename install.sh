@@ -628,6 +628,21 @@ N8N_WEBHOOK_URL="${N8N_URL}"
 N8N_ENABLED=$([ -n "${N8N_URL}" ] && echo "true" || echo "false")
 EOF
 
+  ADMIN_API_KEY=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+  TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)
+  N8N_INTERNAL_SECRET=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)
+
+  cat >> "${ENV_FILE}" << EOF
+
+# Security keys (auto-generated)
+ADMIN_API_KEY="${ADMIN_API_KEY}"
+TELEGRAM_WEBHOOK_SECRET="${TELEGRAM_WEBHOOK_SECRET}"
+N8N_INTERNAL_SECRET="${N8N_INTERNAL_SECRET}"
+EOF
+
+  print_success "کلیدهای امنیتی تولید شدند."
+  print_warning "کلید ADMIN_API_KEY: ${ADMIN_API_KEY}"
+
   chmod 600 "${ENV_FILE}"
   print_success "فایل ${ENV_FILE} با مجوز امنیتی ۶۰۰ با موفقیت ایجاد شد."
 
