@@ -32,7 +32,8 @@ else
 fi
 
 # 3. Test non-interactive CLI flags (--help and --status)
-echo "LANG_CHOICE=en" > .install_lang
+echo "LANG=en" > .install_lang
+touch .env
 if bash install.sh --help > /dev/null 2>&1; then
   echo "[PASS] install.sh --help executed successfully non-interactively"
 else
@@ -41,12 +42,12 @@ else
 fi
 
 if bash install.sh --status > /dev/null 2>&1; then
-  echo "[PASS] install.sh --status executed successfully non-interactively"
+  echo "[PASS] install.sh --status executed successfully with installation present"
 else
   echo "[FAIL] install.sh --status failed"
   exit 1
 fi
-rm -f .install_lang
+rm -f .install_lang .env
 
 # 4. Check documentation files
 for doc in README.md README_FA.md INSTALL_GUIDE_FA.md INSTALL_GUIDE_EN.md; do

@@ -1,0 +1,34 @@
+{
+  "name": "MODASR HUB · Event Router",
+  "nodes": [
+    { "id": "1", "name": "MODASR Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 300],
+      "parameters": { "httpMethod": "POST", "path": "modasr-events", "responseMode": "onReceived" } },
+    { "id": "2", "name": "Verify HMAC", "type": "n8n-nodes-base.code", "typeVersion": 2, "position": [240, 300],
+      "parameters": { "jsCode": "const crypto = require('crypto');\nconst h = $input.first().json.headers;\nconst body = JSON.stringify($input.first().json.body);\nconst ts = h['x-modasr-timestamp'];\nif (Math.abs(Date.now()/1000 - Number(ts)) > 300) throw new Error('stale');\nconst sig = crypto.createHmac('sha256', $env.MODASR_SIGNING_SECRET).update(ts + '.' + body).digest('hex');\nif (sig !== h['x-modasr-signature']) throw new Error('bad signature');\nreturn [{ json: $input.first().json.body }];" } },
+    { "id": "3", "name": "Route by event", "type": "n8n-nodes-base.switch", "typeVersion": 3, "position": [480, 300],
+      "parameters": { "rules": { "values": [
+        { "outputKey": "user.registered", "conditions": { "conditions": [{ "leftValue": "={{$json.event}}", "rightValue": "user.registered", "operator": { "type": "string", "operation": "equals" } }] } },
+        { "outputKey": "order.paid", "conditions": { "conditions": [{ "leftValue": "={{$json.event}}", "rightValue": "order.paid", "operator": { "type": "string", "operation": "equals" } }] } },
+        { "outputKey": "order.delivered", "conditions": { "conditions": [{ "leftValue": "={{$json.event}}", "rightValue": "order.delivered", "operator": { "type": "string", "operation": "equals" } }] } },
+        { "outputKey": "ticket.created", "conditions": { "conditions": [{ "leftValue": "={{$json.event}}", "rightValue": "ticket.created", "operator": { "type": "string", "operation": "equals" } }] } }
+      ] } } },
+    { "id": "4", "name": "CRM: upsert contact", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [760, 120],
+      "parameters": { "method": "POST", "url": "={{$env.CRM_URL}}/contacts", "sendBody": true, "bodyParameters": { "parameters": [{ "name": "external_id", "value": "={{$json.data.user_id}}" }] } } },
+    { "id": "5", "name": "Email receipt", "type": "n8n-nodes-base.emailSend", "typeVersion": 2, "position": [760, 280],
+      "parameters": { "subject": "=رسید سفارش #{{$json.data.number}} | MODASR HUB", "text": "=سفارش شما با موفقیت پرداخت شد. مبلغ: {{$json.data.total}} تومان" } },
+    { "id": "6", "name": "Analytics", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [760, 440],
+      "parameters": { "method": "POST", "url": "={{$env.ANALYTICS_URL}}/events" } },
+    { "id": "7", "name": "Urgent ticket → Telegram", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [760, 600],
+      "parameters": { "chatId": "={{$env.TG_ADMIN_GROUP_ID}}", "text": "=🎫 تیکت جدید ({{$json.data.priority}}): {{$json.data.subject}}" } }
+  ],
+  "connections": {
+    "MODASR Webhook": { "main": [[{ "node": "Verify HMAC", "type": "main", "index": 0 }]] },
+    "Verify HMAC": { "main": [[{ "node": "Route by event", "type": "main", "index": 0 }]] },
+    "Route by event": { "main": [
+      [{ "node": "CRM: upsert contact", "type": "main", "index": 0 }],
+      [{ "node": "Email receipt", "type": "main", "index": 0 }, { "node": "Analytics", "type": "main", "index": 0 }],
+      [{ "node": "Analytics", "type": "main", "index": 0 }],
+      [{ "node": "Urgent ticket → Telegram", "type": "main", "index": 0 }]
+    ] }
+  }
+}

@@ -1,5 +1,6 @@
 import { UploadProgressBar } from './UploadProgressBar';
 import { LinkPreview } from './LinkPreview';
+import { TelegramWebAppBridge } from './TelegramWebAppBridge';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Send,
@@ -65,6 +66,7 @@ export const TelegramSimulator: React.FC<Props> = ({
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [isListening, setIsListening] = useState(false);
   const [copiedLink, setCopiedLink] = useState<string | null>(null);
+  const [isWebAppExpanded, setIsWebAppExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const getDirectDownloadUrl = (url?: string, filename?: string) => {
@@ -251,6 +253,14 @@ export const TelegramSimulator: React.FC<Props> = ({
             <span>/start</span>
           </button>
         </div>
+      </div>
+
+      {/* Telegram WebApp Bridge Component */}
+      <div className="px-4 py-2 bg-[#17212b]/60 border-b border-[#242f3d]">
+        <TelegramWebAppBridge
+          isExpanded={isWebAppExpanded}
+          onToggleExpand={() => setIsWebAppExpanded(!isWebAppExpanded)}
+        />
       </div>
 
       {/* Messages Stream Container (Telegram Wallpaper Pattern style) */}
