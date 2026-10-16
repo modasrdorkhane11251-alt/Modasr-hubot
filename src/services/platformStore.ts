@@ -531,6 +531,30 @@ export class MafiaPlatformStore {
 
     return room;
   }
+
+  // ==========================================
+  // Persistence Export / Import for Database
+  // ==========================================
+  exportData(): { users: UserAccount[]; transactions: TransactionRecord[] } {
+    return {
+      users: Array.from(this.users.values()),
+      transactions: this.transactions,
+    };
+  }
+
+  importData(data: { users?: UserAccount[]; transactions?: TransactionRecord[] }): void {
+    if (!data) return;
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      for (const u of data.users) {
+        if (u && u.id) {
+          this.users.set(u.id, u);
+        }
+      }
+    }
+    if (Array.isArray(data.transactions) && data.transactions.length > 0) {
+      this.transactions = data.transactions;
+    }
+  }
 }
 
 export const platformStore = new MafiaPlatformStore();

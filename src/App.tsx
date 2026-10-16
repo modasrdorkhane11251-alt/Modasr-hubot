@@ -279,6 +279,7 @@ export default function App() {
         videoUrl: r.videoUrl,
         audioUrl: r.audioUrl,
         mediaAttachment: r.mediaAttachment,
+        uploadProgress: r.uploadProgress,
       }));
       setMessages((prev) => [...prev, ...newBotMsgs]);
       syncWallet();
@@ -328,6 +329,7 @@ export default function App() {
           videoUrl: r.videoUrl,
           audioUrl: r.audioUrl,
           mediaAttachment: r.mediaAttachment,
+        uploadProgress: r.uploadProgress,
         }));
         setMessages((prev) => [...prev, ...newBotMsgs]);
         syncWallet();
@@ -352,6 +354,7 @@ export default function App() {
           videoUrl: r.videoUrl,
           audioUrl: r.audioUrl,
           mediaAttachment: r.mediaAttachment,
+        uploadProgress: r.uploadProgress,
         }));
         setMessages((prev) => [...prev, ...newBotMsgs]);
         syncWallet();

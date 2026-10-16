@@ -57,10 +57,122 @@ import { ValidationService } from './src/services/validationService';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+
+// ============================================================================
+// SECURITY & SANITIZATION HELPERS
+// ============================================================================
+
+/**
+ * Mask sensitive bot tokens to prevent leaking in logs, UI, or API responses
+ */
+function maskToken(token?: string | null): string {
+  if (!token || token.length < 8) return '';
+  return `${token.slice(0, 4)}***${token.slice(-4)}`;
+}
+
+/**
+ * SSRF Protection: Validates that external URLs target public internet addresses
+ * Blocks localhost, private subnets (RFC 1918), and cloud metadata endpoints
+ */
+function isSafeExternalUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    
+    // Block loopback and local hostnames
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1') return false;
+    // Block internal AWS / GCP / Cloud metadata
+    if (host === '169.254.169.254' || host === 'metadata.google.internal' || host === 'metadata') return false;
+    // Block RFC 1918 private subnets
+    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// In-memory sliding-window IP rate limiter
+const ipRequestWindow: Map<string, { count: number; resetTime: number }> = new Map();
+function checkRateLimit(ip: string, limit = 60, windowMs = 60000): boolean {
+  const now = Date.now();
+  const record = ipRequestWindow.get(ip);
+  if (!record || now > record.resetTime) {
+    ipRequestWindow.set(ip, { count: 1, resetTime: now + windowMs });
+    return true;
+  }
+  if (record.count >= limit) {
+    return false;
+  }
+  record.count += 1;
+  return true;
+}
+
 const app = express();
-const PORT = 3000;
+
+// Direct download route for MODASR_FULL_PROJECT_CURRENT.zip
+app.get(['/download/MODASR_FULL_PROJECT_CURRENT.zip', '/MODASR_FULL_PROJECT_CURRENT.zip'], (_req, res) => {
+  const zipPath = path.join(__dirname, 'MODASR_FULL_PROJECT_CURRENT.zip');
+  if (fs.existsSync(zipPath)) {
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="MODASR_FULL_PROJECT_CURRENT.zip"');
+    res.sendFile(zipPath);
+  } else {
+    res.status(404).json({ error: 'ZIP file not found' });
+  }
+});
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(express.json());
+
+// Comprehensive Production Health Check & Readiness Endpoint
+app.get(['/health', '/api/health'], (_req, res) => {
+  const dbHealth = databasePersistenceService.checkHealth();
+  const uptimeSeconds = Math.round(process.uptime());
+  const mem = process.memoryUsage();
+
+  const isHealthy = dbHealth.writable;
+
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
+    version: '3.0.0',
+    timestamp: new Date().toISOString(),
+    uptimeSeconds,
+    database: {
+      status: dbHealth.exists ? 'online' : 'initializing',
+      writable: dbHealth.writable,
+      sizeBytes: dbHealth.sizeBytes,
+      backupAvailable: dbHealth.backupExists,
+      usersCount: botStorage.users.size,
+      walletsCount: botStorage.wallets.size,
+      ordersCount: botStorage.orders.length,
+      mafiaUsersCount: platformStore.users.size,
+    },
+    bots: {
+      telegram: {
+        active: realBotRunner.isPolling,
+        username: realBotRunner.botInfo?.username || null,
+        configured: Boolean(realBotRunner.token),
+      },
+      bale: {
+        active: baleBotRunner.isPolling,
+        username: baleBotRunner.botInfo?.username || null,
+        configured: Boolean(baleBotRunner.token),
+      },
+      rubika: {
+        active: rubikaBotRunner.isPolling,
+        username: rubikaBotRunner.botInfo?.username || null,
+        configured: Boolean(rubikaBotRunner.token),
+      },
+    },
+    memory: {
+      rssMb: Math.round(mem.rss / 1024 / 1024),
+      heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+      heapTotalMb: Math.round(mem.heapTotal / 1024 / 1024),
+    },
+  });
+});
+
 
 // Global Real Bot Poller State
 interface RealBotRunner {
@@ -106,9 +218,9 @@ async function sendTelegramMessage(token: string, response: BotResponse) {
       parse_mode: 'Markdown',
     };
 
-    const baleKeyboards = convertKeyboardForPlatform(response.reply_markup, 'bale');
-    if (baleKeyboards.reply_markup) {
-      payload.reply_markup = baleKeyboards.reply_markup;
+    const tgKeyboards = convertKeyboardForPlatform(response.reply_markup, 'telegram');
+    if (tgKeyboards.reply_markup) {
+      payload.reply_markup = tgKeyboards.reply_markup;
     }
 
     // Direct media sending if real video, photo, or audio exists (respecting Telegram caption 1024-char limit)
@@ -222,7 +334,7 @@ async function startLongPolling(token: string) {
               addLog('incoming', `پیام از @${sender.username || sender.first_name}: ${msg.text || '[بدون متن]'}`, update);
 
               const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
               for (const resp of responses) {
                 await sendTelegramMessage(token, resp);
               }
@@ -231,8 +343,8 @@ async function startLongPolling(token: string) {
               addLog('callback', `کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`, update);
               await answerTelegramCallback(token, cb.id);
 
-              const responses = await handleTelegramCallbackQuery(cb, 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+              const responses = await handleTelegramCallbackQuery(cb);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
               for (const resp of responses) {
                 await sendTelegramMessage(token, resp);
               }
@@ -273,7 +385,7 @@ interface BaleBotRunner {
 }
 
 const baleBotRunner: BaleBotRunner = {
-  token: process.env.BALE_BOT_TOKEN || '1432398423:ZFYQHqmqfSlDn6iinj2BaWEmxiNndrcEMJI',
+  token: process.env.BALE_BOT_TOKEN || '',
   isPolling: false,
   botInfo: null,
   abortController: null,
@@ -287,9 +399,9 @@ async function sendBaleMessage(token: string, response: BotResponse) {
       chat_id: response.chatId,
     };
 
-    const baleKeyboards = convertKeyboardForPlatform(response.reply_markup, 'bale');
-    if (baleKeyboards.reply_markup) {
-      payload.reply_markup = baleKeyboards.reply_markup;
+    const tgKeyboards = convertKeyboardForPlatform(response.reply_markup, 'telegram');
+    if (tgKeyboards.reply_markup) {
+      payload.reply_markup = tgKeyboards.reply_markup;
     }
 
     if (response.videoUrl && /^https?:\/\//i.test(response.videoUrl)) {
@@ -357,15 +469,15 @@ async function startBalePolling(token: string) {
               addLog('incoming', `[بله Bale] پیام از @${sender.username || sender.first_name}: ${msg.text || '[بدون متن]'}`, update);
 
               const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
               for (const resp of responses) {
                 await sendBaleMessage(token, resp);
               }
             } else if (update.callback_query) {
               const cb = update.callback_query;
               addLog('callback', `[بله Bale] کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`, update);
-              const responses = await handleTelegramCallbackQuery(cb, 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+              const responses = await handleTelegramCallbackQuery(cb);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
               for (const resp of responses) {
                 await sendBaleMessage(token, resp);
               }
@@ -392,7 +504,7 @@ interface RubikaBotRunner {
 }
 
 const rubikaBotRunner: RubikaBotRunner = {
-  token: process.env.RUBIKA_BOT_TOKEN || 'CGIHBD0KQDYASEPUOXOOWDFJDTPPHMGNWIMSQIJDOFMBGWYLTIRSLUMIQDVPQLPJ',
+  token: process.env.RUBIKA_BOT_TOKEN || '',
   isPolling: false,
   botInfo: null,
   abortController: null,
@@ -567,7 +679,7 @@ async function startRubikaPolling(token: string) {
                 });
               } else {
                 responses = await handleTelegramIncomingMessage(sender, 12345, text, 'rubika');
-              databasePersistenceService.scheduleSave(botStorage);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
               }
 
               for (const resp of responses) {
@@ -927,8 +1039,8 @@ app.post('/api/instagram/extract', async (req, res) => {
 // URL OpenGraph & Destination Metadata Scraper for LinkPreview component
 app.get('/api/media/preview', async (req, res) => {
   const targetUrl = String(req.query.url || '');
-  if (!targetUrl) {
-    return res.status(400).json({ error: 'Missing url parameter' });
+  if (!targetUrl || !isSafeExternalUrl(targetUrl)) {
+    return res.status(400).json({ error: 'Invalid or restricted destination URL' });
   }
 
   let domain = '';
@@ -995,8 +1107,8 @@ app.get('/api/media/stream', async (req, res) => {
     const filename = String(req.query.filename || 'media_file.mp4');
     const isAudio = req.query.audio === 'true' || filename.endsWith('.mp3');
 
-    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
-      return res.status(400).send('Invalid target URL');
+    if (!targetUrl || !isSafeExternalUrl(targetUrl)) {
+      return res.status(400).send('خطای امنیتی: آدرس نامعتبر یا دسترسی به آدرس‌های خصوصی/داخلی شبکه مسدود است.');
     }
 
     const headers: Record<string, string> = {
@@ -1253,13 +1365,13 @@ app.post('/api/bot/dispatch', async (req, res) => {
       message,
     };
     addLog('callback', `شبیه‌ساز وب: کلیک روی ${callbackData}`);
-    const responses = await handleTelegramCallbackQuery(cbQuery, 'simulator');
-    databasePersistenceService.scheduleSave(botStorage);
+    const responses = await handleTelegramCallbackQuery(cbQuery);
+    databasePersistenceService.scheduleSave(botStorage, platformStore);
     return res.json({ responses, wallet: botStorage.getWallet(defaultUser.id) });
   } else {
     addLog('incoming', `شبیه‌ساز وب: ${text || ''}`);
     const responses = await handleTelegramIncomingMessage(defaultUser, targetChatId, text || '', 'simulator');
-    databasePersistenceService.scheduleSave(botStorage);
+    databasePersistenceService.scheduleSave(botStorage, platformStore);
     return res.json({ responses, wallet: botStorage.getWallet(defaultUser.id) });
   }
 });
@@ -1363,6 +1475,7 @@ app.get('/api/bale/status', (_req, res) => {
   res.json({
     connected: baleBotRunner.isPolling,
     botInfo: baleBotRunner.botInfo,
+    maskedToken: maskToken(baleBotRunner.token),
   });
 });
 
@@ -1370,6 +1483,7 @@ app.get('/api/rubika/status', (_req, res) => {
   res.json({
     connected: rubikaBotRunner.isPolling,
     botInfo: rubikaBotRunner.botInfo,
+    maskedToken: maskToken(rubikaBotRunner.token),
   });
 });
 
@@ -1483,7 +1597,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
       addLog('incoming', `[n8n/Webhook] پیام از @${sender.username || sender.first_name}: ${msg.text || ''}`);
 
       const responses = await handleTelegramIncomingMessage(sender, msg.chat.id, msg.text || '', 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
       
       // Notify n8n
       sendToN8n('incoming_message', { update, responses });
@@ -1499,8 +1613,8 @@ app.post('/api/telegram/webhook', async (req, res) => {
       const cb = update.callback_query;
       addLog('callback', `[n8n/Webhook] کلیک دکمه از @${cb.from.username || cb.from.first_name}: ${cb.data}`);
       
-      const responses = await handleTelegramCallbackQuery(cb, 'telegram');
-              databasePersistenceService.scheduleSave(botStorage);
+      const responses = await handleTelegramCallbackQuery(cb);
+              databasePersistenceService.scheduleSave(botStorage, platformStore);
       
       // Notify n8n
       sendToN8n('callback_query', { callback: cb, responses });
@@ -1891,11 +2005,10 @@ async function setupServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`SlowMegaBot Server running on http://0.0.0.0:${PORT}`);
     // Load persistent database from disk on server startup
-    databasePersistenceService.load(botStorage);
+    databasePersistenceService.load(botStorage, platformStore);
 
     // 1. Auto-connect Telegram Bot
-    const providedToken = '8623750026:AAHWT31Y4IhuthBGWJWMPJGgRTME0w5MF-o';
-    const envToken = process.env.TELEGRAM_BOT_TOKEN || providedToken;
+    const envToken = process.env.TELEGRAM_BOT_TOKEN;
     if (envToken && !realBotRunner.isPolling) {
       const clean = envToken.trim();
       fetch(`https://api.telegram.org/bot${clean}/getMe`)
@@ -1912,7 +2025,7 @@ async function setupServer() {
     }
 
     // 2. Auto-connect Bale Bot (بله)
-    const baleToken = process.env.BALE_BOT_TOKEN || '1432398423:ZFYQHqmqfSlDn6iinj2BaWEmxiNndrcEMJI';
+    const baleToken = process.env.BALE_BOT_TOKEN;
     if (baleToken && !baleBotRunner.isPolling) {
       const cleanBale = baleToken.trim();
       fetch(`https://tapi.bale.ai/bot${cleanBale}/getMe`)
@@ -1929,7 +2042,7 @@ async function setupServer() {
     }
 
     // 3. Auto-connect Rubika Bot (روبیکا)
-    const rubikaToken = process.env.RUBIKA_BOT_TOKEN || 'CGIHBD0KQDYASEPUOXOOWDFJDTPPHMGNWIMSQIJDOFMBGWYLTIRSLUMIQDVPQLPJ';
+    const rubikaToken = process.env.RUBIKA_BOT_TOKEN;
     if (rubikaToken && !rubikaBotRunner.isPolling) {
       const cleanRubika = rubikaToken.trim();
       fetch(`https://botapi.rubika.ir/v3/${cleanRubika}/getMe`, {

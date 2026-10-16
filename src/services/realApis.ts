@@ -900,60 +900,145 @@ export function fetchTikTokVideoDetails(tiktokUrl: string): TikTokVideoResult {
 // اینستاگرام، یوتیوب، تیک‌تاک، پینترست، توییتر X، اسپاتیفای، آپارات، تلگرام، فایل مستقیم
 // ========================================================
 
+/**
+ * Strips tracking parameters (utm_*, igsh, fbclid, gclid, etc.) from URLs
+ * while preserving required functional parameters (v=..., id=..., etc.)
+ */
+export function stripTrackingParams(rawUrl: string): string {
+  if (!rawUrl || !rawUrl.trim()) return '';
+  let urlStr = rawUrl.trim();
+
+  // Remove trailing punctuation attached to link from text
+  urlStr = urlStr.replace(/[),.:،؛!؟»"'>\]}]+$/, '');
+
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+-.]*:\/\//.test(urlStr);
+  const parseTarget = hasScheme ? urlStr : 'https://' + urlStr;
+
+  try {
+    const url = new URL(parseTarget);
+
+    const trackingParams = new Set([
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id', 'utm_cid',
+      'utm_reader', 'utm_referrer', 'utm_name', 'igsh', 'igshid', 'fbclid', 'gclid', 'dclid',
+      'msclkid', 'feature', 'pp', 'attr_tag', 'ref', 'ref_src', 'ref_url', 'sub_id', 'aff_id',
+      'tblci', 'twclid', '_ga', '_gl', 'si'
+    ]);
+
+    const keysToDelete: string[] = [];
+    url.searchParams.forEach((_, key) => {
+      const lowerKey = key.toLowerCase();
+      if (
+        trackingParams.has(lowerKey) ||
+        lowerKey.startsWith('utm_') ||
+        lowerKey.startsWith('igsh') ||
+        lowerKey.startsWith('fbclid')
+      ) {
+        keysToDelete.push(key);
+      }
+    });
+
+    keysToDelete.forEach((key) => url.searchParams.delete(key));
+
+    let cleaned = url.toString();
+    if (!hasScheme && cleaned.startsWith('https://')) {
+      cleaned = cleaned.replace(/^https:\/\//, '');
+    }
+
+    if (url.search === '' && (url.pathname === '/' || url.pathname === '')) {
+      cleaned = cleaned.replace(/\/$/, '');
+    }
+
+    return cleaned;
+  } catch {
+    return urlStr
+      .replace(/([?&])(utm_[a-z0-9_]+|igsh[a-z0-9_]*|fbclid|gclid|dclid|msclkid|feature|ref|sub_id|si)=[^&]*/gi, '$1')
+      .replace(/[?&]&+/g, '&')
+      .replace(/[?&]$/, '');
+  }
+}
+
+/**
+ * Resolves shorteners and normalizes domain names
+ */
+export function normalizeShortenedUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  let normalized = rawUrl.trim();
+
+  // Instagr.am -> instagram.com
+  normalized = normalized.replace(/https?:\/\/(www\.)?instagr\.am\//i, 'https://www.instagram.com/');
+
+  // Youtu.be/xxxx -> youtube.com/watch?v=xxxx
+  normalized = normalized.replace(/https?:\/\/youtu\.be\/([a-zA-Z0-9_-]+)/i, 'https://www.youtube.com/watch?v=$1');
+
+  // TikTok shortlinks vm.tiktok.com / vt.tiktok.com
+  normalized = normalized.replace(/https?:\/\/(vm|vt)\.tiktok\.com\//i, 'https://www.tiktok.com/');
+
+  // Pin.it -> pinterest.com
+  normalized = normalized.replace(/https?:\/\/pin\.it\//i, 'https://www.pinterest.com/pin/');
+
+  // T.co -> x.com
+  normalized = normalized.replace(/https?:\/\/t\.co\//i, 'https://x.com/');
+
+  // Spotify shortlinks
+  normalized = normalized.replace(/https?:\/\/spotify\.link\//i, 'https://open.spotify.com/track/');
+
+  return normalized;
+}
+
 export function extractUrlFromText(text: string): string | null {
   if (!text) return null;
 
-  // 1. پاکسازی کاراکترهای نامرئی یونیکد و علائم جهت‌دهی متن (RTL/LTR و نیم‌فاصله چسبیده به لینک)
+  // 1. Clean invisible unicode characters and RTL/LTR marks
   let cleaned = text
-    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '')
+    .replace(/[​-‏‪-‮﻿]/g, '')
     .trim();
 
-  // 2. شناسایی هوشمند لینک‌های با پروتکل (http:// یا https://) حتی درون جملات فارسی و علائم نقل‌قول
-  const protocolRegex = /(?:https?:\/\/)[^\s"'«»<>()[\\\]{}]+/i;
+  // 2. Protocol URL Matcher (http:// or https://)
+  const protocolRegex = /(?:https?:\/\/)[^\s"'«»<>()[\\]{}]+/i;
   const match = cleaned.match(protocolRegex);
   if (match) {
-    let url = match[0];
-    // حذف علائم نگارشی پایانی، گیومه‌ها و براکت‌های چسبیده به ته لینک
-    url = url.replace(/[),.:،؛!؟»"'>\]}]+$/, '');
-    return url;
+    let rawUrl = match[0].replace(/[),.:،؛!؟»"'>\]}]+$/, '');
+    const stripped = stripTrackingParams(rawUrl);
+    return normalizeShortenedUrl(stripped);
   }
 
-  // 3. شناسایی دامنه‌های معروف شبکه‌های اجتماعی بدون پروتکل (مانند instagram.com/reel/... یا pin.it/... یا vm.tiktok.com/...)
-  const domainRegex = /(?:^|\s|[«"(<])((?:(?:[a-zA-Z0-9-]+\.)+)?(?:instagram\.com|instagr\.am|youtube\.com|youtu\.be|tiktok\.com|pinterest\.com|pin\.it|twitter\.com|x\.com|t\.co|spotify\.com|spotify\.link|soundcloud\.com|aparat\.com|t\.me|telegram\.me|threads\.net|facebook\.com|fb\.watch|fb\.com)\/[^\s"'«»<>()[\\\]{}]+)/i;
+  // 3. Domain-based Matcher without explicit protocol
+  const domainRegex = /(?:^|\s|[«"(<])((?:(?:[a-zA-Z0-9-]+\.)+)?(?:instagram\.com|instagr\.am|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|pinterest\.com|pin\.it|twitter\.com|x\.com|t\.co|spotify\.com|spotify\.link|soundcloud\.com|aparat\.com|t\.me|telegram\.me|threads\.net|facebook\.com|fb\.watch|fb\.com)\/[^\s"'«»<>()[\\]{}]+)/i;
   const domainMatch = cleaned.match(domainRegex);
   if (domainMatch) {
-    let url = domainMatch[1];
-    url = url.replace(/[),.:،؛!؟»"'>\]}]+$/, '');
-    return 'https://' + url;
+    let rawUrl = domainMatch[1].replace(/[),.:،؛!؟»"'>\]}]+$/, '');
+    const stripped = stripTrackingParams('https://' + rawUrl);
+    return normalizeShortenedUrl(stripped);
   }
 
-  // 4. شناسایی لینک‌های مستقیم فایل‌های ویدیویی، صوتی و تصویری (mp4, mp3, mkv, jpg, ...)
-  const mediaRegex = /(?:^|\s|[«"(<])((?:https?:\/\/)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s"'«»<>()[\\\]{}]+)?\.(?:mp4|mp3|m4a|mkv|webm|jpg|jpeg|png|gif|webp|pdf|zip|rar)(?:\?[^\s"'«»<>()[\\\]{}]*)?)/i;
+  // 4. Direct Media File Extensions (mp4, mp3, mkv, jpg, pdf, etc.)
+  const mediaRegex = /(?:^|\s|[«"(<])((?:https?:\/\/)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s"'«»<>()[\\]{}]+)?\.(?:mp4|mp3|m4a|mkv|webm|jpg|jpeg|png|gif|webp|pdf|zip|rar)(?:\?[^\s"'«»<>()[\\]{}]*)?)/i;
   const mediaMatch = cleaned.match(mediaRegex);
   if (mediaMatch) {
-    let url = mediaMatch[1].replace(/[),.:،؛!؟»"'>\]}]+$/, '');
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
+    let rawUrl = mediaMatch[1].replace(/[),.:،؛!؟»"'>\]}]+$/, '');
+    if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+      rawUrl = 'https://' + rawUrl;
     }
-    return url;
+    const stripped = stripTrackingParams(rawUrl);
+    return normalizeShortenedUrl(stripped);
   }
 
   return null;
 }
 
 export function detectDownloadPlatform(url: string): UniversalDownloadPlatform {
-  const lower = (url || '').toLowerCase();
-  if (lower.includes('instagram.com') || lower.includes('instagr.am')) return 'instagram';
-  if (lower.includes('youtube.com') || lower.includes('youtu.be')) return 'youtube';
-  if (lower.includes('tiktok.com')) return 'tiktok';
-  if (lower.includes('pinterest.com') || lower.includes('pin.it') || lower.includes('pinterest.')) return 'pinterest';
-  if (lower.includes('twitter.com') || lower.includes('x.com') || lower.includes('t.co/')) return 'twitter';
-  if (lower.includes('spotify.com') || lower.includes('spotify.link')) return 'spotify';
-  if (lower.includes('soundcloud.com')) return 'soundcloud';
-  if (lower.includes('aparat.com')) return 'aparat';
-  if (lower.includes('t.me/') || lower.includes('telegram.me/')) return 'telegram';
-  if (lower.includes('facebook.com') || lower.includes('fb.watch') || lower.includes('fb.com')) return 'facebook';
-  if (lower.includes('threads.net')) return 'threads';
+  const clean = normalizeShortenedUrl(stripTrackingParams(url || '')).toLowerCase();
+  if (clean.includes('instagram.com') || clean.includes('instagr.am')) return 'instagram';
+  if (clean.includes('youtube.com') || clean.includes('youtu.be')) return 'youtube';
+  if (clean.includes('tiktok.com')) return 'tiktok';
+  if (clean.includes('pinterest.com') || clean.includes('pin.it')) return 'pinterest';
+  if (clean.includes('twitter.com') || clean.includes('x.com') || clean.includes('t.co/')) return 'twitter';
+  if (clean.includes('spotify.com') || clean.includes('spotify.link')) return 'spotify';
+  if (clean.includes('soundcloud.com')) return 'soundcloud';
+  if (clean.includes('aparat.com')) return 'aparat';
+  if (clean.includes('t.me/') || clean.includes('telegram.me/')) return 'telegram';
+  if (clean.includes('facebook.com') || clean.includes('fb.watch') || clean.includes('fb.com')) return 'facebook';
+  if (clean.includes('threads.net')) return 'threads';
   return 'direct_link';
 }
 
@@ -1509,12 +1594,17 @@ function getDynamicAssetForUrl(url: string) {
 }
 
 export function fetchUniversalDownload(inputUrl: string): UniversalDownloadItem {
-  const platform = detectDownloadPlatform(inputUrl);
-  const detectedType = detectContentType(inputUrl, platform);
-  const assets = getDynamicAssetForUrl(inputUrl);
+  const cleanInputUrl = normalizeShortenedUrl(stripTrackingParams(inputUrl || ''));
+  const platform = detectDownloadPlatform(cleanInputUrl);
+  const detectedType = detectContentType(cleanInputUrl, platform);
+  const assets = getDynamicAssetForUrl(cleanInputUrl);
 
-  // Check if matches one of the presets exactly
-  const matched = UNIVERSAL_DOWNLOAD_PRESETS.find((p) => p.url.toLowerCase() === inputUrl.toLowerCase());
+  // Check if matches one of the presets (fuzzy/clean match)
+  const matched = UNIVERSAL_DOWNLOAD_PRESETS.find((p) => {
+    const pClean = normalizeShortenedUrl(stripTrackingParams(p.url)).toLowerCase();
+    const inputClean = cleanInputUrl.toLowerCase();
+    return pClean === inputClean || pClean.includes(inputClean) || inputClean.includes(pClean);
+  });
   if (matched) {
     return matched;
   }

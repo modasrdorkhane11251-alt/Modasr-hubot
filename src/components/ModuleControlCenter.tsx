@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { DownloaderDiagnosticsModal } from './DownloaderDiagnosticsModal';
 import React, { useState, useEffect, useRef } from 'react';
 import {

@@ -13,7 +13,8 @@ import {
   UserWallet,
   DirectUploadFile,
   MafiaRole,
-  MafiaPlayer
+  MafiaPlayer,
+  UploadProgressPayload
 } from '../types/telegram';
 import {
   fetchRealCardInfo,
@@ -40,6 +41,8 @@ import {
   detectDownloadPlatform,
   detectContentType,
   extractUrlFromText,
+  stripTrackingParams,
+  normalizeShortenedUrl,
 } from './realApis';
 import { parseInstagramUrl, extractInstagramRawUrl } from './instagramService';
 import {
@@ -61,7 +64,7 @@ export interface OwnerConfig {
 }
 
 export interface BotUserRecord {
-  id: string; // e.g. "tg_8623750026" or "bale_857701256" or "rubika_u0J1q4A052b3e360c26b14d89fc1cdf0"
+  id: string; // e.g. "tg_123456789" or "bale_857701256" or "rubika_u0J1q4A052b3e360c26b14d89fc1cdf0"
   rawId: string | number;
   platform: 'telegram' | 'bale' | 'rubika' | 'simulator';
   firstName: string;
@@ -273,6 +276,7 @@ export interface BotResponse {
   videoUrl?: string;
   audioUrl?: string;
   mediaAttachment?: TelegramMediaAttachment;
+  uploadProgress?: UploadProgressPayload;
   action?: 'typing' | 'upload_photo' | 'upload_document' | 'upload_video' | 'upload_audio';
   extraData?: any;
 }
@@ -744,7 +748,10 @@ export async function handleTelegramIncomingMessage(
       {
         chatId,
         text: `سلام ${user.first_name || 'کاربر گرامی'} عزیز! 🌹\n` +
-          `به **SlowMegaBot** خوش آمدید؛ ربات همه‌کاره و یکپارچه شامل تمام ۱۰ ماژول تخصصی:\n\n` +
+          `به **SlowMegaBot** خوش آمدید؛ ربات همه‌کاره و یکپارچه شامل تمام ۱۰ ماژول تخصصی:
+
+🔗 **راهنما:** لطفاً لینک خودتون رو ارسال کنید، یا اسم آهنگ، یا متن آهنگ، یا این خواننده و...
+🌐 **لینک برنامه:** https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app\n\n` +
           `🎮 **مافیا:** بازی حرفه‌ای ۹ و ۱۲ نفره با نقش‌ها و بات‌های هوشمند\n` +
           `🚀 **بت و انفجار:** بازی موشک انفجار با ضریب زنده، تاس و دارت\n` +
           `⚔️ **کلش آف کلنز:** ساخت دهکده، ارتقای تاون‌هال و غارت منابع\n` +
@@ -1221,11 +1228,18 @@ export function handleUploaderMenu(chatId: number, user: TelegramUser): BotRespo
       text: `📤 *آپلودر حرفه‌ای فایل و فایل‌باکس (SlowUploader)*\n\n` +
         `شما می‌توانید هرگونه فایل، عکس، آهنگ یا ویدیویی را در این چت ارسال کنید تا بلافاصله:\n` +
         `• یک لینک دانلود پرسرعت مستقیم و نیم‌بها برای آن تولید شود.\n` +
-        `• کد اشتراک‌گذاری جهت ارسال سریع به دوستان دریافت کنید.\n` +
-        `• فایل، تصویر، ویدیو یا صوت خود را در چت ارسال کنید.`,
+        `• کد اشتراک‌گذاری جهت ارسال سریع به دوستان دریافت کنید.`,
+      uploadProgress: {
+        fileName: 'MODASR_Full_Project_Archive_v3.zip',
+        fileSizeMb: 24.5,
+        speedMbps: 14.2,
+        generatedLink: 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip',
+        directUrl: 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip',
+        expiresInDays: 7,
+      },
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📂 فایل‌های آپلود شده من', callback_data: 'cb_uploader_my_files' }],
+          [{ text: '📂 نمونه آپلود فایل و ساخت لینک', callback_data: 'cb_uploader_sample' }],
           [{ text: '🔙 بازگشت به منو', callback_data: 'cb_main_menu' }],
         ],
       },
@@ -1475,7 +1489,8 @@ export function handleMusicMenu(chatId: number, user: TelegramUser): BotResponse
         `• دانلود فایل‌های باکیفیت 320kbps و 128kbps\n` +
         `• پخش آنلاین و پیش‌نمایش درجا با پلیر صوتی\n` +
         `• مشاهده متن ترانه (Lyrics)\n\n` +
-        `🎶 برای جستجو، اسم آهنگ یا خواننده را بنویسید یا آهنگ‌های پرطرفدار زیر را لمس کنید:`,
+        `🎶 **برای جستجو، اسم آهنگ، متن آهنگ، یا این خواننده و... رو بفرستید، یا لینک خودتون رو ارسال کنید!**
+🌐 **لینک برنامه:** https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app`,
       reply_markup: {
         inline_keyboard: [
           [
@@ -1595,11 +1610,14 @@ export function validateMediaUrl(url: string): { isValid: boolean; reason?: stri
     return { isValid: false, reason: 'Empty URL' };
   }
 
-  let targetUrl = url.trim();
-  // اگر پروتکل نداشت، به صورت خودکار https اضافه کن
+  const extracted = extractUrlFromText(url);
+  let targetUrl = extracted || url.trim();
+
   if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
     targetUrl = 'https://' + targetUrl;
   }
+
+  targetUrl = normalizeShortenedUrl(stripTrackingParams(targetUrl));
 
   let parsed: URL;
   try {
@@ -1632,6 +1650,8 @@ export function validateMediaUrl(url: string): { isValid: boolean; reason?: stri
     'instagram.com',
     'instagr.am',
     'tiktok.com',
+    'vm.tiktok.com',
+    'vt.tiktok.com',
     'youtube.com',
     'youtu.be',
     'pinterest.com',
@@ -1655,9 +1675,11 @@ export function validateMediaUrl(url: string): { isValid: boolean; reason?: stri
     'commondatastorage.googleapis.com',
     'ineo-team.ir',
     'codebazan.ir',
+    'bit.ly',
+    'tinyurl.com',
+    'shorturl.at'
   ];
 
-  // پشتیبانی از فایل‌های مستقیم ویدیویی، صوتی و تصویری در هر هاست معتبر
   const hasMediaExtension = /\.(mp4|mp3|m4a|mkv|webm|avi|mov|jpg|jpeg|png|gif|webp|pdf|zip|rar)($|\?)/i.test(lowerPath);
   const isMatchedDomain = validDomains.some((d) => hostname === d || hostname.endsWith('.' + d));
 
@@ -1691,7 +1713,8 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
       {
         chatId,
         text: `📥 *دانلودر همه‌کاره و هوشمند SlowMegaBot*\n\n` +
-          `🔗 **لطفاً لینک مورد نظر خود را ارسال کنید:**\n\n` +
+          `🔗 **لطفاً لینک خودتون رو ارسال کنید، یا اسم آهنگ، یا متن آهنگ، یا این خواننده و...**
+🌐 **لینک برنامه:** https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app\n\n` +
           `✅ ربات به صورت هوشمند و خودکار پلتفرم را تشخیص داده و فایل را ارسال می‌کند:\n` +
           `📸 **اینستاگرام:** ریلز، پست، استوری، عکس پروفایل\n` +
           `🎥 **یوتیوب:** ویدیو، شورتس (کیفیت‌های 1080p, 720p و MP3)\n` +
@@ -1775,7 +1798,7 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
       `📸 *پلتفرم اینستاگرام با موفقیت شناسایی شد! ✅*\n\n` +
       `🎬 **نوع محتوا:** ${item.url.includes('/reel') ? 'ریلز (Reels)' : 'پست / ویدیو'}\n` +
       `🆔 **شناسه معتبر:** \`${shortcode}\`\n` +
-      `👤 **ناشر:** ${cleanAuthor}\n` +
+      `👤 **ناشر:** ${item.author || 'ناشر اینستاگرام'}\n` +
       `👁️ **آمار ویو (بازدید):** ${viewsText}\n` +
       `❤️ **تعداد لایک:** ${likesText}\n` +
       `💬 **تعداد کامنت:** ${commentsText}\n` +
@@ -2326,7 +2349,7 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
         text:
           `🎵 *دانلود آهنگ و صوت اختصاصی پست:*\n\n` +
           `🎼 **نام قطعه:** صوت استخراج‌شده از ${item.title}\n` +
-          `👤 **ناشر:** ${cleanAuthor}\n` +
+          `👤 **ناشر:** ${item.author || 'ناشر اینستاگرام'}\n` +
           `🎚️ **کیفیت:** ۳۲۰ کیلوبیت استودیویی (MP3 320kbps)\n` +
           `⏱️ **مدت:** ${item.duration || '00:45'} | 📁 **حجم:** ${audioFmt?.sizeMb || 3.1} مگابایت\n\n` +
           `👇 پلیر پخش آنلاین در چت فعال شد و فایل آماده دانلود مستقیم است:`,
@@ -3776,21 +3799,29 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
   }
 
   // UPLOADER CALLBACKS
-  if (data === 'cb_uploader_sample') {
+  if (data === 'cb_uploader_sample' || data === 'cb_uploader_my_files') {
     const fileId = 'FL-' + Math.floor(100000 + Math.random() * 900000);
     return [
       {
         chatId,
-        text: `📥 *فایل با موفقیت در سرور آپلود شد!*\n\n` +
-          `نام فایل: \`Archive_Music_Collection.zip\`\n` +
+        text: `📥 *فایل با موفقیت در سرور فایل‌باکس آپلود شد!*\n\n` +
+          `نام فایل: \`MODASR_FULL_PROJECT_CURRENT.zip\`\n` +
           `حجم: 24.5 MB\n` +
           `کد یکتا: \`${fileId}\`\n\n` +
-          `🔗 **لینک دانلود مستقیم نیم‌بها:**\n` +
-          `https://dl.slowbot.ir/file/${fileId}`,
+          `🔗 **لینک دانلود مستقیم پرسرعت و نیم‌بها:**\n` +
+          `https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip`,
+        uploadProgress: {
+          fileName: 'MODASR_FULL_PROJECT_CURRENT.zip',
+          fileSizeMb: 24.5,
+          speedMbps: 18.6,
+          generatedLink: 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip',
+          directUrl: 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip',
+          expiresInDays: 7,
+        },
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📥 دانلود فایل', url: 'https://telegram.org' }],
-            [{ text: '🔙 بازگشت', callback_data: 'cb_uploader_menu' }],
+            [{ text: '📥 دانلود مستقیم فایل', url: 'https://ais-dev-dxc4tymnudmayrh26p7cqa-76299078893.us-east1.run.app/MODASR_FULL_PROJECT_CURRENT.zip' }],
+            [{ text: '🔙 بازگشت به آپلودر', callback_data: 'cb_uploader_menu' }],
           ],
         },
       },

@@ -54,11 +54,38 @@ class DownloaderCore:
     """Core unified download pipeline implementing 10-stage execution and validation."""
 
     @classmethod
+    def strip_tracking_params(cls, url: str) -> str:
+        """Strips tracking parameters (utm_*, igsh, fbclid, gclid, etc.) from URL."""
+        if not url:
+            return ""
+        url = url.strip().rstrip(").,:;!?>]} ")
+        try:
+            parsed = urllib.parse.urlparse(url)
+            query_dict = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            tracking_keys = {
+                "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "utm_id", "utm_cid",
+                "igsh", "igshid", "fbclid", "gclid", "dclid", "msclkid", "feature", "pp", "ref", "sub_id", "aff_id", "si"
+            }
+            cleaned_query = {
+                k: v for k, v in query_dict.items()
+                if k.lower() not in tracking_keys and not k.lower().startswith("utm_") and not k.lower().startswith("igsh")
+            }
+            new_query = urllib.parse.urlencode(cleaned_query, doseq=True)
+            cleaned = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment
+            ))
+            return cleaned.rstrip("?")
+        except Exception:
+            return re.sub(r'([?&])(utm_[a-z0-9_]+|igsh[a-z0-9_]*|fbclid|gclid|feature|ref|si)=[^&]*', '', url, flags=re.I).rstrip("?&")
+
+    @classmethod
     def clean_url(cls, url: str) -> str:
         """Strips query garbage from URLs while preserving clean paths."""
-        url = url.strip()
+        if not url:
+            return ""
+        url = cls.strip_tracking_params(url)
         # Clean Instagram
-        m_ig = re.search(r'(https?://(?:www\.)?instagram\.com/(?:p|reel|tv|stories)/[A-Za-z0-9_\-]+)', url, re.IGNORECASE)
+        m_ig = re.search(r'(https?://(?:www\.)?(?:instagram\.com|instagr\.am)/(?:p|reel|reels|tv|stories)/[A-Za-z0-9_\-]+)', url, re.IGNORECASE)
         if m_ig:
             return m_ig.group(1)
         # Clean YouTube

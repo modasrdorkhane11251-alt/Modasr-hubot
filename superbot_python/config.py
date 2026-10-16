@@ -1,23 +1,22 @@
-"""
-Configuration file for Multi-Platform SuperBot (Telegram, Bale, Rubika)
-Phase 1 - Enterprise Architecture
-"""
+"""Configuration file for Multi-Platform SuperBot (Telegram, Bale, Rubika)
+Phase 1 - Enterprise Architecture"""
+
 import os
 from typing import List
 
 # ==========================================================
 # 1. BOT TOKENS & PLATFORM CREDENTIALS
 # ==========================================================
-TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "8623750026:AAHWT31Y4IhuthBGWJWMPJGgRTME0w5MF-o")
-TELEGRAM_API_ID: int = int(os.getenv("TELEGRAM_API_ID", "24868799"))
-TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "df6c61ace96690c84d482b2776f04ca8")
-BALE_BOT_TOKEN: str = os.getenv("BALE_BOT_TOKEN", "1432398423:ZFYQHqmqfSlDn6iinj2BaWEmxiNndrcEMJI")
-RUBIKA_BOT_TOKEN: str = os.getenv("RUBIKA_BOT_TOKEN", "CGIHBD0KQDYASEPUOXOOWDFJDTPPHMGNWIMSQIJDOFMBGWYLTIRSLUMIQDVPQLPJ")
+TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_API_ID: int = int(os.getenv("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH: str = os.getenv("TELEGRAM_API_HASH", "")
+BALE_BOT_TOKEN: str = os.getenv("BALE_BOT_TOKEN", "")
+RUBIKA_BOT_TOKEN: str = os.getenv("RUBIKA_BOT_TOKEN", "")
 
 # Admin IDs (Can be Telegram, Bale, or Rubika User IDs)
 ADMIN_USER_IDS: List[str] = [
     admin_id.strip()
-    for admin_id in os.getenv("ADMIN_USER_IDS", "584920194,777000,1001").split(",")
+    for admin_id in os.getenv("ADMIN_USER_IDS", "584920194,777000").split(",")
     if admin_id.strip()
 ]
 
@@ -32,8 +31,8 @@ DATABASE_PATH: str = os.getenv("DATABASE_PATH", os.path.join(BASE_DIR, "database
 # ==========================================================
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8080"))
-WEBHOOK_SECRET_TOKEN: str = os.getenv("WEBHOOK_SECRET_TOKEN", "superbot_secure_secret_token_2026")
-WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "https://yourdomain.com")
+WEBHOOK_SECRET_TOKEN: str = os.getenv("WEBHOOK_SECRET_TOKEN", "")
+WEBHOOK_BASE_URL: str = os.getenv("WEBHOOK_BASE_URL", "")
 
 # ==========================================================
 # 4. BOT SYSTEM DEFAULTS & ECONOMIC RULES
@@ -51,23 +50,23 @@ DEFAULT_REQUEST_COST_POINTS: int = 1    # Cost per AI / Media request
 # 5. PHASE 2 API KEYS (AI, Vision, Media Downloaders & OCR)
 # ==========================================================
 API_KEYS = {
-    "fast_gpt_chat": os.getenv("API_KEY_FAST_GPT_CHAT", "099a9b46e330a6c0b396e95c"),
-    "fast_gpt4": os.getenv("API_KEY_FAST_GPT4", "099a9b46e330a6c0b396e95c"),
-    "fast_blackbox": os.getenv("API_KEY_FAST_BLACKBOX", "099a9b46e330a6c0b396e95c"),
-    "fast_photo": os.getenv("API_KEY_FAST_PHOTO", "099a9b46e330a6c0b396e95c"),
-    "fast_ghibli": os.getenv("API_KEY_FAST_GHIBLI", "099a9b46e330a6c0b396e95c"),
-    "fast_quality": os.getenv("API_KEY_FAST_QUALITY", "099a9b46e330a6c0b396e95c"),
-    "fast_logo": os.getenv("API_KEY_FAST_LOGO", "099a9b46e330a6c0b396e95c"),
-    "fast_ig": os.getenv("API_KEY_FAST_IG", "099a9b46e330a6c0b396e95c"),
-    "fast_youtube": os.getenv("API_KEY_FAST_YOUTUBE", "099a9b46e330a6c0b396e95c"),
-    "fast_spotify": os.getenv("API_KEY_FAST_SPOTIFY", "099a9b46e330a6c0b396e95c"),
-    "fast_rj": os.getenv("API_KEY_FAST_RJ", "099a9b46e330a6c0b396e95c"),
-    "fast_screen": os.getenv("API_KEY_FAST_SCREEN", "099a9b46e330a6c0b396e95c"),
-    "fast_shortener": os.getenv("API_KEY_FAST_SHORTENER", "099a9b46e330a6c0b396e95c"),
-    "fast_numberbook": os.getenv("API_KEY_FAST_NUMBERBOOK", "099a9b46e330a6c0b396e95c"),
-    "fast_football": os.getenv("API_KEY_FAST_FOOTBALL", "099a9b46e330a6c0b396e95c"),
-    "majid_token": os.getenv("API_KEY_MAJID_TOKEN", "mock_majid_token_sec_2026"),
-    "majid_compiler": os.getenv("API_KEY_MAJID_COMPILER", "mock_majid_token_sec_2026"),
+    "fast_gpt_chat": os.getenv("API_KEY_FAST_GPT_CHAT", ""),
+    "fast_gpt4": os.getenv("API_KEY_FAST_GPT4", ""),
+    "fast_blackbox": os.getenv("API_KEY_FAST_BLACKBOX", ""),
+    "fast_photo": os.getenv("API_KEY_FAST_PHOTO", ""),
+    "fast_ghibli": os.getenv("API_KEY_FAST_GHIBLI", ""),
+    "fast_quality": os.getenv("API_KEY_FAST_QUALITY", ""),
+    "fast_logo": os.getenv("API_KEY_FAST_LOGO", ""),
+    "fast_ig": os.getenv("API_KEY_FAST_IG", ""),
+    "fast_youtube": os.getenv("API_KEY_FAST_YOUTUBE", ""),
+    "fast_spotify": os.getenv("API_KEY_FAST_SPOTIFY", ""),
+    "fast_rj": os.getenv("API_KEY_FAST_RJ", ""),
+    "fast_screen": os.getenv("API_KEY_FAST_SCREEN", ""),
+    "fast_shortener": os.getenv("API_KEY_FAST_SHORTENER", ""),
+    "fast_numberbook": os.getenv("API_KEY_FAST_NUMBERBOOK", ""),
+    "fast_football": os.getenv("API_KEY_FAST_FOOTBALL", ""),
+    "majid_token": os.getenv("API_KEY_MAJID_TOKEN", ""),
+    "majid_compiler": os.getenv("API_KEY_MAJID_COMPILER", ""),
     "ocr_space": os.getenv("API_KEY_OCR_SPACE", "helloworld"),
 }
 

@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Centralized Application Configuration & Feature Registry (SlowMegaBot)
  * Single source of truth for runtime settings, environment variables,

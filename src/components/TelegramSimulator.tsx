@@ -1,3 +1,4 @@
+import { UploadProgressBar } from './UploadProgressBar';
 import { LinkPreview } from './LinkPreview';
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -103,8 +104,18 @@ export const TelegramSimulator: React.FC<Props> = ({
       };
 
       recognition.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
         setIsListening(false);
+        const errType = event?.error;
+        if (errType === 'not-allowed' || errType === 'service-not-allowed' || errType === 'permission-denied') {
+          console.warn('Speech recognition: Microphone access not allowed or blocked in current environment.');
+          alert('🎙️ دسترسی به میکروفون مجاز نیست یا در مرورگر مسدود شده است.\nلطفاً دسترسی میکروفون را در مرورگر مجاز کرده یا پیام را تایپ نمایید.');
+        } else if (errType === 'no-speech') {
+          console.warn('Speech recognition: No speech detected.');
+        } else if (errType === 'aborted') {
+          // Aborted by user or system
+        } else {
+          console.warn('Speech recognition status:', errType || 'ended');
+        }
       };
 
       recognition.onend = () => {
@@ -113,7 +124,7 @@ export const TelegramSimulator: React.FC<Props> = ({
 
       recognition.start();
     } catch (err) {
-      console.error(err);
+      console.warn('Failed to start speech recognition:', err);
       setIsListening(false);
     }
   };
@@ -291,6 +302,17 @@ export const TelegramSimulator: React.FC<Props> = ({
                     </div>
                     <LinkPreview url={extractUrlFromText(msg.text)!} />
                   </div>
+                )}
+
+                {/* Visual Upload Progress Bar Component for Uploader Commands */}
+                {msg.uploadProgress && (
+                  <UploadProgressBar
+                    data={msg.uploadProgress}
+                    onCopyFeedback={() => {
+                      playClickFeedback();
+                      confetti({ particleCount: 25, spread: 55 });
+                    }}
+                  />
                 )}
 
                 {/* Embedded Video Media Player with Direct Download */}
@@ -547,6 +569,8 @@ export const TelegramSimulator: React.FC<Props> = ({
                   {isUser && <CheckCheck className="w-3.5 h-3.5 text-[#40b3e0]" />}
                 </div>
               </div>
+
+
 
               {/* Inline Buttons (Keyboards) */}
               {inlineKeyboard && inlineKeyboard.length > 0 && (

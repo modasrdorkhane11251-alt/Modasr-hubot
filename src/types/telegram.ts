@@ -67,6 +67,16 @@ export interface TelegramMediaAttachment {
   };
 }
 
+export interface UploadProgressPayload {
+  fileName: string;
+  fileSizeMb: number;
+  speedMbps?: number;
+  generatedLink?: string;
+  directUrl?: string;
+  expiresInDays?: number;
+  status?: 'uploading' | 'completed' | 'generating_link';
+}
+
 export interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
@@ -80,6 +90,7 @@ export interface TelegramMessage {
   videoUrl?: string;
   audioUrl?: string;
   mediaAttachment?: TelegramMediaAttachment;
+  uploadProgress?: UploadProgressPayload;
   document?: { file_id: string; file_name: string; mime_type: string; file_size: number };
   voice?: { file_id: string; duration: number; file_size: number };
   dice?: { emoji: string; value: number };

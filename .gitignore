@@ -1,10 +1,29 @@
+# Dependencies & Build Outputs
 node_modules/
 build/
 dist/
 coverage/
 .DS_Store
 *.log
-.env*
+
+# Environment & Secret Files
+.env
+.env.local
+.env.*
 !.env.example
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+
+# Database & Runtime Data
+*.sqlite3
+*.sqlite3-journal
+data/
 backups/
 .installed.lock
