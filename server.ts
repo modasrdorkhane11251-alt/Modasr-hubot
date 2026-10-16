@@ -1,4 +1,11 @@
-import { requireAdmin, requireTelegramSecret, requireN8nSecret, rateLimit } from './src/middleware/security';
+import {
+  requireAdmin,
+  requireTelegramSecret,
+  requireN8nSecret,
+  rateLimit,
+  ssrfGuard,
+  isSafeExternalUrl,
+} from './src/middleware/security';
 import { authenticateWebAppUser, buildWebAppButton } from './src/services/webAppAuth';
 import { platformStore } from './src/services/platformStore';
 import { databasePersistenceService } from './src/services/databasePersistenceService';
@@ -37,6 +44,8 @@ import {
   fetchYouTubeVideoDetails,
   searchMusicDatabase,
   fetchDetailedArzyRates,
+  getDetailedArzyRates,
+  calculateArzyConversion,
   createAploUpload,
   aploStoredFilesList,
   fetchTikTokVideoDetails,
@@ -118,6 +127,14 @@ app.set('trust proxy', 1);
 const authRateLimiter = rateLimit({ windowMs: 60000, max: 10 });
 const mafiaRateLimiter = rateLimit({ windowMs: 60000, max: 60 });
 const webrtcRateLimiter = rateLimit({ windowMs: 60000, max: 120 });
+const adminRateLimiter = rateLimit({ windowMs: 60000, max: 30 });
+const publicApiRateLimiter = rateLimit({ windowMs: 60000, max: 120 });
+const verifyTokenRateLimiter = rateLimit({
+  windowMs: 60000,
+  max: 5,
+  message: 'تعداد تلاش‌های تأیید توکن بیش از حد مجاز است',
+});
+const realApiRateLimiter = rateLimit({ windowMs: 60000, max: 20 });
 
 // Direct download route for MODASR_FULL_PROJECT_CURRENT.zip
 app.get(['/download/MODASR_FULL_PROJECT_CURRENT.zip', '/MODASR_FULL_PROJECT_CURRENT.zip'], (_req, res) => {
@@ -130,7 +147,28 @@ app.get(['/download/MODASR_FULL_PROJECT_CURRENT.zip', '/MODASR_FULL_PROJECT_CURR
     res.status(404).json({ error: 'ZIP file not found' });
   }
 });
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+function resolveServerPort(): number {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const val = parseInt(process.argv[portArgIndex + 1], 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  const pIndex = process.argv.indexOf('-p');
+  if (pIndex !== -1 && process.argv[pIndex + 1]) {
+    const val = parseInt(process.argv[pIndex + 1], 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  if (process.env.APP_PORT) {
+    const val = parseInt(process.env.APP_PORT, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  if (process.env.PORT && process.env.PORT !== '8080') {
+    const val = parseInt(process.env.PORT, 10);
+    if (!isNaN(val) && val > 0) return val;
+  }
+  return 3000;
+}
+const PORT = resolveServerPort();
 
 app.use(express.json());
 
@@ -727,7 +765,7 @@ async function startRubikaPolling(token: string) {
 
 
 // Real APIs Endpoints (from project files)
-app.get('/api/real/currency', async (_req, res) => {
+app.get('/api/real/currency', realApiRateLimiter, async (_req, res) => {
   try {
     const data = await fetchRealCurrencyRates();
     res.json(data);
@@ -736,7 +774,7 @@ app.get('/api/real/currency', async (_req, res) => {
   }
 });
 
-app.post('/api/real/card', async (req, res) => {
+app.post('/api/real/card', realApiRateLimiter, async (req, res) => {
   try {
     const { cardNumber } = req.body;
     const data = await fetchRealCardInfo(cardNumber || '');
@@ -746,7 +784,7 @@ app.post('/api/real/card', async (req, res) => {
   }
 });
 
-app.get('/api/real/corona', async (_req, res) => {
+app.get('/api/real/corona', realApiRateLimiter, async (_req, res) => {
   try {
     const data = await fetchRealCoronaStats();
     res.json(data);
@@ -755,7 +793,7 @@ app.get('/api/real/corona', async (_req, res) => {
   }
 });
 
-app.get('/api/real/tempmail', async (_req, res) => {
+app.get('/api/real/tempmail', realApiRateLimiter, async (_req, res) => {
   try {
     const data = await generateRealTempMail();
     res.json(data);
@@ -764,7 +802,7 @@ app.get('/api/real/tempmail', async (_req, res) => {
   }
 });
 
-app.get('/api/real/tempmail/inbox', async (req, res) => {
+app.get('/api/real/tempmail/inbox', realApiRateLimiter, async (req, res) => {
   try {
     const login = String(req.query.login || '');
     const domain = String(req.query.domain || '');
@@ -775,11 +813,11 @@ app.get('/api/real/tempmail/inbox', async (req, res) => {
   }
 });
 
-app.get('/api/real/proxies', (_req, res) => {
+app.get('/api/real/proxies', realApiRateLimiter, (_req, res) => {
   res.json(getRealMTProtoProxies());
 });
 
-app.get('/api/real/vaksms', (_req, res) => {
+app.get('/api/real/vaksms', realApiRateLimiter, (_req, res) => {
   res.json(getRealVakSmsCatalog());
 });
 
@@ -793,7 +831,7 @@ const ai = new GoogleGenAI({
   }
 });
 
-app.post('/api/tools/live-web-data', async (req, res) => {
+app.post('/api/tools/live-web-data', requireAdmin, rateLimit({ windowMs: 60000, max: 10 }), async (req, res) => {
   try {
     const { query } = req.body;
     const prompt = query || "آخرین نرخ لحظه‌ای ارز، طلا، سکه و رمزارزها در بازار تهران و وضعیت سرویس‌های آنلاین مهم امروز را به همراه تحلیل کوتاه و منابع جستجوی گوگل گزارش دهید.";
@@ -815,7 +853,7 @@ app.post('/api/tools/live-web-data', async (req, res) => {
 });
 
 // 1. Web Proxy Endpoint (سورس فیلتر شکن سایت.zip)
-app.get('/api/proxy/fetch', async (req, res) => {
+app.get('/api/proxy/fetch', ssrfGuard, publicApiRateLimiter, async (req, res) => {
   try {
     const targetUrl = String(req.query.url || '');
     if (!targetUrl) {
@@ -872,8 +910,17 @@ app.get('/api/music/search', (req, res) => {
 });
 
 // 5. Arzy Real-time Rates (arzy.php)
-app.get('/api/arzy/detailed', (_req, res) => {
-  res.json(fetchDetailedArzyRates());
+app.get('/api/arzy/detailed', async (_req, res) => {
+  const rates = await getDetailedArzyRates();
+  res.json(rates);
+});
+
+app.get('/api/arzy/convert', async (req, res) => {
+  const amount = Number(req.query.amount) || 1;
+  const from = String(req.query.from || 'usd');
+  const rates = await getDetailedArzyRates();
+  const conversion = calculateArzyConversion(amount, from, rates);
+  res.json(conversion);
 });
 
 // 6. Aplo File Upload Endpoints (aplo.zip)
@@ -1110,7 +1157,7 @@ app.get('/api/media/preview', async (req, res) => {
 });
 
 // Real Media Stream & Direct Download Proxy (Bypasses CORS & Instagram hotlink blocks)
-app.get('/api/media/stream', async (req, res) => {
+app.get('/api/media/stream', ssrfGuard, async (req, res) => {
   try {
     const targetUrl = String(req.query.url || '');
     const filename = String(req.query.filename || 'media_file.mp4');
@@ -1469,7 +1516,7 @@ app.get('/api/bot/users', requireAdmin, (_req, res) => {
 });
 
 // Get Database & Persistence summary
-app.get('/api/bot/database/stats', (_req, res) => {
+app.get('/api/bot/database/stats', requireAdmin, (_req, res) => {
   res.json({
     ok: true,
     usersCount: botStorage.users.size,
@@ -1480,7 +1527,7 @@ app.get('/api/bot/database/stats', (_req, res) => {
   });
 });
 
-app.get('/api/bale/status', (_req, res) => {
+app.get('/api/bale/status', requireAdmin, (_req, res) => {
   res.json({
     connected: baleBotRunner.isPolling,
     botInfo: baleBotRunner.botInfo,
@@ -1488,7 +1535,7 @@ app.get('/api/bale/status', (_req, res) => {
   });
 });
 
-app.get('/api/rubika/status', (_req, res) => {
+app.get('/api/rubika/status', requireAdmin, (_req, res) => {
   res.json({
     connected: rubikaBotRunner.isPolling,
     botInfo: rubikaBotRunner.botInfo,
@@ -1496,12 +1543,21 @@ app.get('/api/rubika/status', (_req, res) => {
   });
 });
 
-app.get('/api/bot/token/status', (req, res) => {
+app.get('/api/bot/token/status', requireAdmin, (req, res) => {
+  // ماسک کردن توکن‌های احتمالی در لاگ‌ها
+  const maskedLogs = realBotRunner.logs.map((log) => ({
+    ...log,
+    content: String(log.content || '').replace(
+      /\d{8,10}:[A-Za-z0-9_-]{30,}/g,
+      (match) => `${match.slice(0, 4)}***${match.slice(-4)}`
+    ),
+  }));
+
   return res.json({
     connected: !!realBotRunner.botInfo && realBotRunner.isPolling,
     isPolling: realBotRunner.isPolling,
     botInfo: realBotRunner.botInfo,
-    logs: realBotRunner.logs,
+    logs: maskedLogs,
   });
 });
 
@@ -1719,7 +1775,7 @@ app.get('/api/n8n/config', requireAdmin, (_req, res) => {
   });
 });
 
-app.get('/api/n8n/attempts', (_req, res) => {
+app.get('/api/n8n/attempts', requireAdmin, (_req, res) => {
   res.json({
     attempts: n8nWebhookAttempts.slice(0, 5),
     totalCount: n8nWebhookAttempts.length,
@@ -1792,7 +1848,7 @@ app.get('/api/n8n/workflow/download', (_req, res) => {
 // ==========================================
 // AUTO INSTALLER & DIAGNOSTICS ENDPOINTS
 // ==========================================
-app.get('/api/installer/diagnostics', (_req, res) => {
+app.get('/api/installer/diagnostics', requireAdmin, (_req, res) => {
   const lockExists = fs.existsSync(path.resolve(__dirname, '.installed.lock'));
   const envExists = fs.existsSync(path.resolve(__dirname, '.env'));
   const logExists = fs.existsSync(path.resolve(__dirname, 'install.log'));
@@ -1816,14 +1872,21 @@ app.get('/api/installer/diagnostics', (_req, res) => {
   });
 });
 
-app.post('/api/installer/verify-token', async (req, res) => {
+app.post('/api/installer/verify-token', requireAdmin, verifyTokenRateLimiter, async (req, res) => {
   const { token } = req.body;
+
   if (!token || typeof token !== 'string') {
     return res.status(400).json({ ok: false, error: 'توکن نامعتبر است' });
   }
+
+  // اعتبارسنجی طول و فرمت توکن تلگرام
+  const cleanToken = token.trim();
+  if (cleanToken.length < 40 || cleanToken.length > 60 || !/^\d+:[A-Za-z0-9_-]+$/.test(cleanToken)) {
+    return res.status(400).json({ ok: false, error: 'فرمت توکن نامعتبر است' });
+  }
+
   try {
-    const clean = token.trim();
-    const tgRes = await fetch(`https://api.telegram.org/bot${clean}/getMe`);
+    const tgRes = await fetch(`https://api.telegram.org/bot${cleanToken}/getMe`);
     const data = await tgRes.json();
     if (data.ok && data.result) {
       return res.json({
@@ -1837,7 +1900,7 @@ app.post('/api/installer/verify-token', async (req, res) => {
     }
     return res.status(400).json({ ok: false, error: data.description || 'توکن نامعتبر است' });
   } catch (err: any) {
-    return res.status(500).json({ ok: false, error: err?.message || 'خطای شبکه در اتصال به سرور تلگرام' });
+    return res.status(500).json({ ok: false, error: err?.message || 'خطای شبکه' });
   }
 });
 
@@ -1925,7 +1988,7 @@ app.post('/api/database/restore', requireAdmin, (req, res) => {
   }
 });
 
-app.get('/api/database/stats', (req, res) => {
+app.get('/api/database/stats', requireAdmin, (req, res) => {
   try {
     const stats = [
       { name: 'users_wallets', label: 'کیف‌پول‌ها و کاربران', count: botStorage.wallets.size, description: 'حساب‌های کاربری، موجودی تومانی، سکه‌ها و اشتراک‌ها' },
@@ -1950,7 +2013,7 @@ app.get('/api/database/stats', (req, res) => {
 });
 
 // 13. System Architecture, Modules Registry & Telemetry Endpoints
-app.get('/api/system/info', (req, res) => {
+app.get('/api/system/info', requireAdmin, (req, res) => {
   const config = appConfig.getConfig();
   res.json({
     ok: true,
@@ -1967,7 +2030,17 @@ app.get('/api/system/info', (req, res) => {
   });
 });
 
-app.get('/api/system/modules', (req, res) => {
+app.get('/api/downloader/status', (_req, res) => {
+  res.json({
+    ok: true,
+    environment: 'AI Studio Sandbox / Google Cloud',
+    ytdlpAvailable: false,
+    fallbacksActive: ['Instagram oEmbed', 'Snapinsta Public API', 'RapidAPI (Optional)'],
+    rapidApiConfigured: !!process.env.RAPIDAPI_KEY && process.env.RAPIDAPI_KEY !== '',
+  });
+});
+
+app.get('/api/system/modules', requireAdmin, (req, res) => {
   const category = req.query.category as string | undefined;
   if (category) {
     return res.json({
@@ -1983,7 +2056,7 @@ app.get('/api/system/modules', (req, res) => {
   });
 });
 
-app.get('/api/system/logs', (req, res) => {
+app.get('/api/system/logs', requireAdmin, (req, res) => {
   const limit = req.query.limit ? Number(req.query.limit) : 50;
   const level = req.query.level as any;
   const logs = logger.getLogs(limit, level);
@@ -1996,8 +2069,118 @@ app.get('/api/system/logs', (req, res) => {
 });
 
 // ==========================================
-// MAFIA WEBAPP (Mini App) ENDPOINTS
+// ADMIN ENVIRONMENT VARIABLES MANAGER ENDPOINTS
 // ==========================================
+app.get('/api/admin/env', requireAdmin, (_req, res) => {
+  try {
+    const envPath = path.resolve(__dirname, '.env');
+    let envContent = '';
+    if (fs.existsSync(envPath)) {
+      envContent = fs.readFileSync(envPath, 'utf8');
+    } else {
+      const examplePath = path.resolve(__dirname, '.env.example');
+      if (fs.existsSync(examplePath)) {
+        envContent = fs.readFileSync(examplePath, 'utf8');
+      }
+    }
+
+    const lines = envContent.split(/\r?\n/);
+    const variables: Array<{ key: string; value: string }> = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        continue;
+      }
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx !== -1) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        let value = trimmed.slice(eqIdx + 1).trim();
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1);
+        }
+        variables.push({ key, value });
+      }
+    }
+
+    const importantKeys = [
+      'PORT', 'SERVER_HOST', 'SERVER_PORT', 'APP_URL', 'WEBHOOK_BASE_URL',
+      'TELEGRAM_BOT_TOKEN', 'BALE_BOT_TOKEN', 'RUBIKA_BOT_TOKEN', 'ADMIN_USER_IDS',
+      'GEMINI_API_KEY', 'RAPIDAPI_KEY', 'ADMIN_API_KEY'
+    ];
+    for (const k of importantKeys) {
+      if (!variables.some(v => v.key === k) && process.env[k]) {
+        variables.push({ key: k, value: process.env[k] || '' });
+      }
+    }
+
+    res.json({ ok: true, variables });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'Error reading env' });
+  }
+});
+
+app.post('/api/admin/env', requireAdmin, (req, res) => {
+  try {
+    const { variables } = req.body;
+    if (!variables) {
+      return res.status(400).json({ ok: false, error: 'Variables are required' });
+    }
+
+    const envPath = path.resolve(__dirname, '.env');
+    let envContent = '';
+    if (fs.existsSync(envPath)) {
+      envContent = fs.readFileSync(envPath, 'utf8');
+    }
+
+    const lines = envContent.split(/\r?\n/);
+    const newLines: string[] = [];
+
+    const varMap = Array.isArray(variables) 
+      ? new Map(variables.map((v: any) => [v.key, v.value]))
+      : new Map(Object.entries(variables));
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        newLines.push(line);
+        continue;
+      }
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx !== -1) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        if (varMap.has(key)) {
+          const val = varMap.get(key);
+          newLines.push(`${key}="${val}"`);
+          varMap.delete(key);
+        } else {
+          newLines.push(line);
+        }
+      } else {
+        newLines.push(line);
+      }
+    }
+
+    for (const [key, val] of varMap.entries()) {
+      newLines.push(`${key}="${val}"`);
+      process.env[key] = String(val);
+    }
+
+    const varList = Array.isArray(variables) ? variables : Object.entries(variables).map(([key, value]) => ({ key, value }));
+    for (const v of varList) {
+      process.env[v.key] = String(v.value);
+    }
+
+    fs.writeFileSync(envPath, newLines.join('\n'), 'utf8');
+    res.json({ ok: true, message: 'متغیرهای محیطی با موفقیت ذخیره شدند.' });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err?.message || 'Error saving env' });
+  }
+});
+
+// ==========================================
+// MAFIA WEBAPP (Mini App) ENDPOINTS
+// ==========================================================
 app.post('/api/webapp/auth', authRateLimiter, (req, res) => {
   const { platform, initData } = req.body;
   const targetPlatform = ['telegram', 'bale', 'rubika'].includes(platform) ? platform : 'telegram';
@@ -2086,7 +2269,11 @@ async function setupServer() {
 
   if (isDev) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        ws: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

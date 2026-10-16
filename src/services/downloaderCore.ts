@@ -563,7 +563,7 @@ export class SharedDownloaderCore {
     const shortcode = detection.shortcode || 'media';
     const targetUrl = detection.cleanedUrl;
 
-    let mediaUrl = 'https://www.w3schools.com/html/mov_bbb.mp4';
+    let mediaUrl = '';
     let thumbnail = 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80';
     let title = `${detection.platformNameFa} [${shortcode}]`;
     let author = detection.username ? `@${detection.username}` : `کاربر ${detection.platformNameFa.split(' ')[0]}`;

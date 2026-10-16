@@ -33,6 +33,9 @@ import {
   MUSIC_CATALOG,
   searchMusicDatabase,
   fetchDetailedArzyRates,
+  getDetailedArzyRates,
+  calculateArzyConversion,
+  parseNaturalArzyQuery,
   createAploUpload,
   aploStoredFilesList,
   fetchTikTokVideoDetails,
@@ -889,8 +892,41 @@ export async function handleTelegramIncomingMessage(
     return handleMusicMenu(chatId, user);
   }
 
-  if (trimmed === '/arz' || trimmed === '/arzy' || trimmed === '/tala' || trimmed === '💰 نرخ لحظه‌ای ارز (arzy)') {
-    return handleArzyMenu(chatId, user);
+  // 5. NATURAL ARZY & CURRENCY QUERY HANDLER (Inspired by modasr-arz)
+  const arzyCheck = parseNaturalArzyQuery(trimmed);
+  if (
+    trimmed === '/arz' ||
+    trimmed === '/arzy' ||
+    trimmed === '/tala' ||
+    trimmed === '💰 نرخ لحظه‌ای ارز (arzy)' ||
+    trimmed === 'ارز' ||
+    trimmed === 'طلا' ||
+    trimmed === 'سکه' ||
+    trimmed === 'دلار' ||
+    trimmed === 'تتر' ||
+    trimmed === 'بیت کوین' ||
+    trimmed === 'بیت‌کوین' ||
+    trimmed === 'اتریوم' ||
+    trimmed === 'تون کوین' ||
+    trimmed === 'تون‌کوین' ||
+    trimmed === 'قیمت دلار' ||
+    trimmed === 'قیمت تتر' ||
+    trimmed === 'قیمت طلا' ||
+    trimmed === 'قیمت سکه' ||
+    trimmed === 'قیمت بیت کوین' ||
+    trimmed === 'قیمت اتریوم' ||
+    trimmed === 'سکه امامی' ||
+    trimmed === 'سکه بهار' ||
+    trimmed === 'نیم سکه' ||
+    trimmed === 'ربع سکه' ||
+    trimmed === 'نرخ ارز' ||
+    trimmed === 'قیمت ارز' ||
+    trimmed === 'نرخ لحظه ای' ||
+    trimmed === 'نرخ لحظه‌ای' ||
+    trimmed === 'ماشین حساب ارز' ||
+    arzyCheck.isArzyQuery
+  ) {
+    return await handleNaturalArzyText(chatId, user, trimmed);
   }
 
   if (trimmed === '/aplo' || trimmed === '/upload' || trimmed === '📤 آپلودر فایل پیشرفته') {
@@ -1515,30 +1551,209 @@ export function handleMusicMenu(chatId: number, user: TelegramUser): BotResponse
   ];
 }
 
-// 5. Arzy Detailed Rates Menu (arzy.php)
-export function handleArzyMenu(chatId: number, user: TelegramUser): BotResponse[] {
-  const rates = fetchDetailedArzyRates();
+// 5. Arzy Detailed Rates Menu (arzy.php - Enhanced with Live TGJU & CoinGecko)
+export async function handleArzyMenu(
+  chatId: number,
+  user: TelegramUser,
+  filterCategory?: 'currency' | 'gold_coin' | 'crypto'
+): Promise<BotResponse[]> {
+  const rates = await getDetailedArzyRates();
   const currencies = rates.filter((r) => r.category === 'currency');
   const gold = rates.filter((r) => r.category === 'gold_coin');
   const crypto = rates.filter((r) => r.category === 'crypto');
 
-  const currText = currencies.map((c) => `${c.icon} *${c.nameFa}:* ${c.priceToman.toLocaleString('fa-IR')} تومان (${c.changePercent24h >= 0 ? '+' : ''}${c.changePercent24h}%)`).join('\n');
-  const goldText = gold.map((g) => `${g.icon} *${g.nameFa}:* ${g.priceToman.toLocaleString('fa-IR')} تومان`).join('\n');
-  const cryptoText = crypto.map((cr) => `${cr.icon} *${cr.nameFa}:* ${cr.priceToman.toLocaleString('fa-IR')} ${cr.key === 'usdt' ? 'تومان' : 'دلار'}`).join('\n');
+  const currText = currencies
+    .map(
+      (c) =>
+        `${c.icon} *${c.nameFa}:* \`${c.priceToman.toLocaleString('fa-IR')} تومان\` (${c.changePercent24h >= 0 ? '🟢 +' : '🔴 '}${c.changePercent24h}%)`
+    )
+    .join('\n');
+
+  const goldText = gold
+    .map((g) => {
+      const unit = g.key === 'gold_ounce' ? 'دلار' : 'تومان';
+      const sign = g.changePercent24h >= 0 ? '🟢 +' : '🔴 ';
+      return `${g.icon} *${g.nameFa}:* \`${g.priceToman.toLocaleString('fa-IR')} ${unit}\` (${sign}${g.changePercent24h}%)`;
+    })
+    .join('\n');
+
+  const cryptoText = crypto
+    .map((cr) => {
+      const sign = cr.changePercent24h >= 0 ? '🟢 +' : '🔴 ';
+      if (cr.key === 'usdt') {
+        return `${cr.icon} *${cr.nameFa}:* \`${cr.priceToman.toLocaleString('fa-IR')} تومان\` (${sign}${cr.changePercent24h}%)`;
+      }
+      const usdtPrice = rates.find((r) => r.key === 'usdt')?.priceToman || 267632;
+      const tomanApprox = Math.round(cr.priceToman * usdtPrice);
+      return `${cr.icon} *${cr.nameFa}:* \`$${cr.priceToman.toLocaleString('en-US')}\` (~ \`${tomanApprox.toLocaleString('fa-IR')} تومان\`) (${sign}${cr.changePercent24h}%)`;
+    })
+    .join('\n');
+
+  const nowFa = new Date().toLocaleTimeString('fa-IR');
+  let body = '';
+  if (filterCategory === 'currency') {
+    body = `💵 **ارزهای آزاد و حواله‌ای (دلار، یورو، درهم، پوند):**\n${currText}`;
+  } else if (filterCategory === 'gold_coin') {
+    body = `🪙 **طلا و مسکوکات بازار تهران (۱۸ عیار، امامی، بهار، نیم و ربع):**\n${goldText}`;
+  } else if (filterCategory === 'crypto') {
+    body = `💎 **رمزارزهای اصلی (تتر، بیت‌کوین، اتریوم، تون‌کوین):**\n${cryptoText}`;
+  } else {
+    body =
+      `💵 **ارزهای آزاد و حواله‌ای:**\n${currText}\n\n` +
+      `🪙 **طلا و مسکوکات بازار تهران:**\n${goldText}\n\n` +
+      `💎 **رمزارزهای اصلی:**\n${cryptoText}`;
+  }
 
   return [
     {
       chatId,
-      text: `💰 *تابلوی نرخ لحظه‌ای ارز، طلا و رمزارزها (arzy.php)*\n\n` +
-        `💵 **ارزهای بین‌المللی:**\n${currText}\n\n` +
-        `🪙 **مسکوکات و طلا:**\n${goldText}\n\n` +
-        `💎 **ارزهای دیجیتال:**\n${cryptoText}\n\n` +
-        `🕒 _به‌روزرسانی زنده از سامانه معاملات تهران و بازارهای جهانی_`,
+      text:
+        `💰 *تابلوی نرخ لحظه‌ای طلا، ارز و رمزارز (arzy.php)*\n` +
+        `🌐 _منبع رسمی: تابلوی زنده TGJU و شبکه نوبیتکس / کوین‌گکو_\n\n` +
+        `${body}\n\n` +
+        `🕒 _آخرین به‌روزرسانی زنده: ساعت ${nowFa}_\n` +
+        `💡 _می‌توانید مستقیم بپرسید: «قیمت تتر»، «سکه امامی»، «۵۰ دلار»_`,
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔄 به‌روزرسانی مجدد نرخ‌ها', callback_data: 'cb_arzy_menu' }],
-          [{ text: '🧮 ماشین‌حساب تبدیل ارز', callback_data: 'cb_arzy_calc' }],
-          [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
+          [
+            { text: '🔄 به‌روزرسانی مجدد نرخ‌ها', callback_data: 'cb_arzy_menu' },
+            { text: '🧮 ماشین‌حساب تبدیل ارز', callback_data: 'cb_arzy_calc' },
+          ],
+          [
+            { text: '🪙 طلا و مسکوکات', callback_data: 'cb_arzy_gold' },
+            { text: '💎 رمزارزهای اصلی', callback_data: 'cb_arzy_crypto' },
+            { text: '💵 ارزهای آزاد', callback_data: 'cb_arzy_fiat' },
+          ],
+          [{ text: '🔙 بازگشت به منوی اصلی', callback_data: 'cb_main_menu' }],
+        ],
+      },
+    },
+  ];
+}
+
+/**
+ * پردازشگر هوشمند پیام‌های متنی استعلام قیمت و تبدیل ارز (Inspired by modasr-arz)
+ */
+export async function handleNaturalArzyText(
+  chatId: number,
+  user: TelegramUser,
+  rawQuery: string
+): Promise<BotResponse[]> {
+  const trimmed = rawQuery.trim().toLowerCase();
+
+  // Check general requests
+  if (
+    trimmed === '/arz' ||
+    trimmed === '/arzy' ||
+    trimmed === 'ارز' ||
+    trimmed === 'قیمت ارز' ||
+    trimmed === 'نرخ ارز' ||
+    trimmed === 'نرخ لحظه ای' ||
+    trimmed === 'نرخ لحظه‌ای' ||
+    trimmed === '💰 نرخ لحظه‌ای ارز (arzy)'
+  ) {
+    return handleArzyMenu(chatId, user);
+  }
+
+  if (
+    trimmed === '/tala' ||
+    trimmed === 'طلا' ||
+    trimmed === 'قیمت طلا' ||
+    trimmed === 'سکه' ||
+    trimmed === 'قیمت سکه' ||
+    trimmed === 'مسکوکات'
+  ) {
+    return handleArzyMenu(chatId, user, 'gold_coin');
+  }
+
+  if (
+    trimmed === 'رمزارز' ||
+    trimmed === 'ارز دیجیتال' ||
+    trimmed === 'کریپتو' ||
+    trimmed === 'crypto'
+  ) {
+    return handleArzyMenu(chatId, user, 'crypto');
+  }
+
+  if (trimmed === 'ماشین حساب ارز' || trimmed === 'ماشین حساب' || trimmed === 'تبدیل ارز') {
+    const rates = await getDetailedArzyRates();
+    const usdtRate = rates.find((r) => r.key === 'usdt')?.priceToman || 267632;
+    const gold18 = rates.find((r) => r.key === 'gold_18k')?.priceToman || 26364300;
+    const emami = rates.find((r) => r.key === 'coin_emami')?.priceToman || 271910000;
+    const eur = rates.find((r) => r.key === 'eur')?.priceToman || 300280;
+    const aed = rates.find((r) => r.key === 'aed')?.priceToman || 73064;
+
+    return [
+      {
+        chatId,
+        text:
+          `🧮 *ماشین‌حساب هوشمند تبدیل ارز به تومان (محاسبه آنلاین طبق نرخ زنده)*\n\n` +
+          `• **۱۰۰ دلار:** \`${(usdtRate * 100).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰۰ یورو:** \`${(eur * 100).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱,۰۰۰ درهم:** \`${(aed * 1000).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱ سکه امامی:** \`${emami.toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰ گرم طلای ۱۸ عیار:** \`${(gold18 * 10).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰۰ تتر (USDT):** \`${(usdtRate * 100).toLocaleString('fa-IR')} تومان\`\n\n` +
+          `💡 _برای تبدیل سایر مبالغ دلخواه، کافیست در چت پیام دهید (مثلاً: \`۵۰ دلار\` یا \`۲۰۰ تتر\` یا \`۳ گرم طلا\`)_`,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 مشاهده تابلوی کامل نرخ‌ها', callback_data: 'cb_arzy_menu' }],
+            [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
+          ],
+        },
+      },
+    ];
+  }
+
+  const parsed = parseNaturalArzyQuery(rawQuery);
+  const rates = await getDetailedArzyRates();
+  const cleanKey = parsed.cleanKey || 'usd';
+  const amount = parsed.amount || 1;
+
+  const item = rates.find((r) => r.key === cleanKey);
+  if (!item) {
+    return handleArzyMenu(chatId, user);
+  }
+
+  const conv = calculateArzyConversion(amount, cleanKey, rates);
+  const sign = item.changePercent24h >= 0 ? '🟢 +' : '🔴 ';
+  const nowFa = new Date().toLocaleTimeString('fa-IR');
+  const unitText = item.key === 'gold_18k' ? 'گرم' : item.key.startsWith('coin_') ? 'سکه' : item.category === 'crypto' ? item.key.toUpperCase() : 'واحد';
+  const titleLabel = amount > 1 ? `${amount.toLocaleString('fa-IR')} ${unitText} ${item.nameFa}` : item.nameFa;
+
+  let calcText = '';
+  if (amount > 1) {
+    calcText =
+      `\n🧮 **محاسبه هوشمند به تومان (${amount.toLocaleString('fa-IR')} ${unitText}):**\n` +
+      `• ارزش کل: \`${conv.tomanTotal.toLocaleString('fa-IR')} تومان\`\n` +
+      `• معادل دلاری: \`$${conv.usdTotal.toLocaleString('en-US')}\`\n`;
+  }
+
+  const responseText =
+    `💰 *استعلام لحظه‌ای بازار: ${titleLabel}*\n` +
+    `🌐 _منبع رسمی: تابلوی زنده TGJU / شبکه نوبیتکس و کوین‌گکو_\n\n` +
+    `${item.icon} **قیمت هر واحد:** \`${item.priceToman.toLocaleString('fa-IR')} ${item.key === 'gold_ounce' ? 'دلار' : 'تومان'}\`\n` +
+    `📊 **تغییرات ۲۴ ساعته:** ${sign}${item.changePercent24h}%\n` +
+    `📈 **بیشترین قیمت امروز:** \`${item.high24h.toLocaleString('fa-IR')} تومان\`\n` +
+    `📉 **کمترین قیمت امروز:** \`${item.low24h.toLocaleString('fa-IR')} تومان\`\n` +
+    `${calcText}\n` +
+    `🕒 _زمان استعلام زنده: ساعت ${nowFa}_\n` +
+    `💡 _برای تبدیل مقادیر دیگر می‌توانید بنویسید: «۵۰ دلار»، «۳ سکه امامی»، «۱۰ گرم طلا»_`;
+
+  return [
+    {
+      chatId,
+      text: responseText,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🔄 استعلام مجدد همین مورد', callback_data: `cb_arzy_${cleanKey}` },
+            { text: '🧮 ماشین‌حساب تبدیل ارز', callback_data: 'cb_arzy_calc' },
+          ],
+          [
+            { text: '📊 تابلوی کامل نرخ‌ها', callback_data: 'cb_arzy_menu' },
+            { text: '🔙 بازگشت به منوی اصلی', callback_data: 'cb_main_menu' },
+          ],
         ],
       },
     },
@@ -1762,6 +1977,24 @@ export function handleUniversalDownloader(chatId: number, user: TelegramUser, ra
 
   // URL provided: analyze and return rich card + instant media attachment
   const item = fetchUniversalDownload(cleanUrl);
+
+  if (!item.mediaUrl || item.formats.length === 0) {
+    return [
+      {
+        chatId,
+        text: `❌ **امکان استخراج مدیا از این لینک وجود ندارد!**\n\n` +
+          `• آدرس ارسالی: ` + cleanUrl.slice(0, 50) + `...\n` +
+          `• دلیل: پست ممکن است خصوصی (Private)، حذف شده باشد یا دسترسی به آن نیازمند توکن رسمی API باشد.\n\n` +
+          `_لطفاً از لینک‌های نمونه موجود در منو یا لینک مستقیم ویدیو استفاده کنید._`,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔗 ارسال لینک جدید', callback_data: 'cb_ask_dl_url' }],
+            [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
+          ],
+        },
+      },
+    ];
+  }
 
   const mediaAttachment: TelegramMediaAttachment = {
     type: item.contentType,
@@ -2635,23 +2868,44 @@ export async function handleTelegramCallbackQuery(query: TelegramCallbackQuery):
 
   // 5. ARZY CALLBACKS
   if (data === 'cb_arzy_menu') {
-    return handleArzyMenu(chatId, user);
+    return await handleArzyMenu(chatId, user);
+  }
+  if (data === 'cb_arzy_gold') {
+    return await handleArzyMenu(chatId, user, 'gold_coin');
+  }
+  if (data === 'cb_arzy_crypto') {
+    return await handleArzyMenu(chatId, user, 'crypto');
+  }
+  if (data === 'cb_arzy_fiat') {
+    return await handleArzyMenu(chatId, user, 'currency');
+  }
+  if (data.startsWith('cb_arzy_') && data !== 'cb_arzy_calc') {
+    const rawKey = data.replace('cb_arzy_', '');
+    return await handleNaturalArzyText(chatId, user, rawKey);
   }
   if (data === 'cb_arzy_calc') {
+    const rates = await getDetailedArzyRates();
+    const usdtRate = rates.find((r) => r.key === 'usdt')?.priceToman || 267632;
+    const gold18 = rates.find((r) => r.key === 'gold_18k')?.priceToman || 26364300;
+    const emami = rates.find((r) => r.key === 'coin_emami')?.priceToman || 271910000;
+    const eur = rates.find((r) => r.key === 'eur')?.priceToman || 300280;
+    const aed = rates.find((r) => r.key === 'aed')?.priceToman || 73064;
+
     return [
       {
         chatId,
-        text: `🧮 **ماشین‌حساب لحظه‌ای مبدل ارز (arzy.php):**\n\n` +
-          `• ۱۰۰ دلار = ۸,۹۸۰,۰۰۰ تومان\n` +
-          `• ۱۰۰ یورو = ۹,۸۴۰,۰۰۰ تومان\n` +
-          `• ۱,۰۰۰ درهم = ۲۴,۵۰۰,۰۰۰ تومان\n` +
-          `• ۱ سکه امامی = ۵۴,۹۰۰,۰۰۰ تومان\n` +
-          `• ۱۰ گرم طلای ۱۸ عیار = ۴۷,۲۰۰,۰۰۰ تومان\n` +
-          `• ۱۰۰ تتر USDT = ۸,۹۹۰,۰۰۰ تومان\n\n` +
-          `_محاسبه با فرمول دقیق و آخرین نرخ لحظه‌ای بازار تهران_`,
+        text:
+          `🧮 *ماشین‌حساب هوشمند تبدیل ارز (محاسبه آنلاین طبق نرخ زنده)*\n\n` +
+          `• **۱۰۰ دلار:** \`${(usdtRate * 100).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰۰ یورو:** \`${(eur * 100).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱,۰۰۰ درهم:** \`${(aed * 1000).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱ سکه امامی:** \`${emami.toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰ گرم طلای ۱۸ عیار:** \`${(gold18 * 10).toLocaleString('fa-IR')} تومان\`\n` +
+          `• **۱۰۰ تتر (USDT):** \`${(usdtRate * 100).toLocaleString('fa-IR')} تومان\`\n\n` +
+          `💡 _برای تبدیل مبالغ دلخواه، کافیست در چت بنویسید (مثلاً: \`۵۰ دلار\` یا \`۲۰۰ تتر\` یا \`۳ گرم طلا\`)_`,
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🔄 مشاهده جدول کامل نرخ‌ها', callback_data: 'cb_arzy_menu' }],
+            [{ text: '🔄 مشاهده تابلوی کامل نرخ‌ها', callback_data: 'cb_arzy_menu' }],
             [{ text: '🔙 منوی اصلی', callback_data: 'cb_main_menu' }],
           ],
         },

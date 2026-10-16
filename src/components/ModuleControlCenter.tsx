@@ -43,6 +43,8 @@ import {
   Share2,
   UserCheck,
   Image as ImageIcon,
+  Save,
+  EyeOff,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import {
@@ -97,7 +99,59 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
     | 'arzy'
     | 'aplo'
     | 'tiktok'
+    | 'env_manager'
   >('universal_dl');
+
+  // ENV MANAGER STATE
+  const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>([]);
+  const [envLoading, setEnvLoading] = useState(false);
+  const [envSaving, setEnvSaving] = useState(false);
+  const [envSearch, setEnvSearch] = useState('');
+  const [showValues, setShowValues] = useState<Record<string, boolean>>({});
+  const [envMessage, setEnvMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  useEffect(() => {
+    if (activeTab === 'env_manager') {
+      fetchEnvVars();
+    }
+  }, [activeTab]);
+
+  const fetchEnvVars = async () => {
+    setEnvLoading(true);
+    try {
+      const res = await fetch('/api/admin/env');
+      const data = await res.json();
+      if (data.ok) {
+        setEnvVars(data.variables || []);
+      }
+    } catch (err) {
+      console.error('Error fetching env vars:', err);
+    } finally {
+      setEnvLoading(false);
+    }
+  };
+
+  const handleSaveEnv = async () => {
+    setEnvSaving(true);
+    setEnvMessage(null);
+    try {
+      const res = await fetch('/api/admin/env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variables: envVars }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setEnvMessage({ text: 'متغیرهای محیطی با موفقیت ذخیره شدند و روی سرور اعمال شدند!', type: 'success' });
+      } else {
+        setEnvMessage({ text: data.error || 'خطا در ذخیره متغیرها', type: 'error' });
+      }
+    } catch (err: any) {
+      setEnvMessage({ text: err?.message || 'خطای شبکه', type: 'error' });
+    } finally {
+      setEnvSaving(false);
+    }
+  };
 
   // 1. WEB PROXY STATE (سورس فیلتر شکن سایت.zip)
   const [proxyUrl, setProxyUrl] = useState('https://wikipedia.org');
@@ -179,6 +233,18 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
   const [likesCount, setLikesCount] = useState(142);
   const [heartsCount, setHeartsCount] = useState(389);
   const [firesCount, setFiresCount] = useState(210);
+
+  // Load live Arzy rates from /api/arzy/detailed
+  useEffect(() => {
+    fetch('/api/arzy/detailed')
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setArzyRates(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Rocket loop
   useEffect(() => {
@@ -313,6 +379,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
             { id: 'uploader', label: 'آپلودر سریع', icon: UploadCloud, color: 'text-purple-400' },
             { id: 'lottery', label: 'لاتاری', icon: Gift, color: 'text-yellow-400' },
             { id: 'like', label: 'لایک‌زن', icon: Heart, color: 'text-pink-400' },
+            { id: 'env_manager', label: 'مدیریت Env', icon: Wrench, color: 'text-emerald-400' },
           ].map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -334,7 +401,100 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
         </div>
       </div>
 
-      {/* ACTIVE TAB DISPLAY */}
+      {/* ENV MANAGER TAB */}
+      {activeTab === 'env_manager' && (
+        <div className="space-y-4">
+          <div className="bg-[#0e1621] rounded-xl border border-emerald-500/30 p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#242f3d] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                  <Wrench className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">مدیریت متغیرهای محیطی (.env)</h3>
+                  <p className="text-xs text-slate-400">مشاهده، ویرایش و ذخیره توکن‌ها و کلیدهای پیکربندی سیستم در یکجا</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fetchEnvVars}
+                  disabled={envLoading}
+                  className="px-3 py-1.5 bg-[#1a2531] hover:bg-[#242f3d] text-slate-200 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer border border-[#242f3d]"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${envLoading ? 'animate-spin' : ''}`} />
+                  <span>بارگذاری مجدد</span>
+                </button>
+                <button
+                  onClick={handleSaveEnv}
+                  disabled={envSaving}
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-emerald-600/20 cursor-pointer"
+                >
+                  <Save className={`w-3.5 h-3.5 ${envSaving ? 'animate-spin' : ''}`} />
+                  <span>{envSaving ? 'در حال ذخیره...' : 'ذخیره همه تغییرات'}</span>
+                </button>
+              </div>
+            </div>
+
+            {envMessage && (
+              <div className={`p-3 rounded-lg text-xs font-medium border ${envMessage.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-rose-500/10 border-rose-500/30 text-rose-400'}`}>
+                {envMessage.text}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="جستجو در نام متغیرها (مثلا TELEGRAM, GEMINI, PORT)..."
+                value={envSearch}
+                onChange={(e) => setEnvSearch(e.target.value)}
+                className="w-full bg-[#16222f] border border-[#242f3d] rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            {envLoading ? (
+              <div className="text-center py-12 text-slate-400 text-xs animate-pulse">در حال خواندن متغیرهای محیطی...</div>
+            ) : (
+              <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+                {envVars
+                  .filter((v) => v.key.toLowerCase().includes(envSearch.toLowerCase()) || v.value.toLowerCase().includes(envSearch.toLowerCase()))
+                  .map((variable: { key: string; value: string }, idx: number) => {
+                    const isVisible = showValues[variable.key];
+                    return (
+                      <div key={variable.key} className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 bg-[#16222f] rounded-xl border border-[#242f3d]">
+                        <div className="w-full sm:w-1/3">
+                          <span className="text-xs font-mono font-bold text-emerald-300">{variable.key}</span>
+                        </div>
+                        <div className="w-full sm:w-2/3 flex items-center gap-2">
+                          <div className="relative flex-1">
+                            <input
+                              type={isVisible ? 'text' : 'password'}
+                              value={variable.value}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setEnvVars((prev) => prev.map((item, i) => (i === idx ? { ...item, value: val } : item)));
+                              }}
+                              className="w-full bg-[#0e1621] border border-[#242f3d] rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500 pr-9"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowValues((prev) => ({ ...prev, [variable.key]: !prev[variable.key] }))}
+                              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                              title={isVisible ? 'مخفی کردن' : 'نمایش ارزش'}
+                            >
+                              {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+            {/* ACTIVE TAB DISPLAY */}
 
       {/* 0. UNIVERSAL MEGA DOWNLOADER SUITE (اینستاگرام، یوتیوب، تیک‌تاک، پینترست، توییتر، اسپاتیفای، آپارات) */}
       {activeTab === 'universal_dl' && (
@@ -2121,7 +2281,19 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                 <h4 className="font-bold text-sm text-white">تابلوی جامع نرخ لحظه‌ای ارز، طلا، سکه و رمزارزها (arzy.php)</h4>
               </div>
               <button
-                onClick={() => setArzyRates(fetchDetailedArzyRates())}
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/arzy/detailed');
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length > 0) {
+                      setArzyRates(data);
+                    } else {
+                      setArzyRates(fetchDetailedArzyRates());
+                    }
+                  } catch {
+                    setArzyRates(fetchDetailedArzyRates());
+                  }
+                }}
                 className="px-3 py-1 bg-[#242f3d] hover:bg-[#2e3d4e] text-slate-300 rounded-lg text-xs flex items-center gap-1 cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -2234,7 +2406,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
                   <div className="w-full bg-[#0e1621] border border-amber-500/40 rounded-lg px-3 py-1.5 text-xs text-amber-300 font-bold font-mono">
                     {(
                       calcAmount *
-                      (arzyRates.find((r) => r.key === calcFrom)?.priceToman || 89800)
+                      (arzyRates.find((r) => r.key === calcFrom)?.priceToman || 267900)
                     ).toLocaleString('fa-IR')}{' '}
                     تومان
                   </div>

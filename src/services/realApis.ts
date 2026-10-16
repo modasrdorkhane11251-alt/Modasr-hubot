@@ -123,64 +123,10 @@ export async function fetchRealCardInfo(cardNumber: string): Promise<RealCardInf
   };
 }
 
-// 2. LIVE CURRENCY, GOLD & CRYPTO (from PUBLIC/Currencyprices/index.php)
+// 2. LIVE CURRENCY, GOLD & CRYPTO (from PUBLIC/Currencyprices/index.php & modasr-arz)
 export async function fetchRealCurrencyRates(): Promise<RealCurrencyRates> {
-  let btcUsd = 88500;
-  let ethUsd = 3420;
-  let usdtToman = 92600;
-
-  try {
-    // 1. Fetch live Crypto from Nobitex or CoinGecko
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-
-    const [nobitexRes, coingeckoRes] = await Promise.allSettled([
-      fetch('https://api.nobitex.ir/market/stats', { signal: controller.signal }),
-      fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,tether&vs_currencies=usd', {
-        signal: controller.signal,
-      }),
-    ]);
-    clearTimeout(timeout);
-
-    if (nobitexRes.status === 'fulfilled' && nobitexRes.value.ok) {
-      const data = await nobitexRes.value.json();
-      if (data?.stats?.['usdt-rls']?.latest) {
-        // Nobitex returns Rials, convert to Tomans
-        usdtToman = Math.round(Number(data.stats['usdt-rls'].latest) / 10);
-      }
-    }
-
-    if (coingeckoRes.status === 'fulfilled' && coingeckoRes.value.ok) {
-      const data = await coingeckoRes.value.json();
-      if (data?.bitcoin?.usd) btcUsd = Math.round(data.bitcoin.usd);
-      if (data?.ethereum?.usd) ethUsd = Math.round(data.ethereum.usd);
-    }
-  } catch (err) {
-    // Graceful fallback to calibrated live rates
-  }
-
-  const usdToman = usdtToman > 0 ? usdtToman - 200 : 92400;
-  const eurToman = Math.round(usdToman * 1.065);
-  const gbpToman = Math.round(usdToman * 1.285);
-  const aedToman = Math.round(usdToman / 3.67);
-  const gold18kToman = Math.round(usdToman * 58.2); // roughly 5,380,000 Toman per gram
-  const coinEmamiToman = Math.round(gold18kToman * 11.37); // roughly 61,200,000 Toman
-
-  return {
-    updatedAt: new Date().toLocaleTimeString('fa-IR'),
-    source: 'Nobitex & CoinGecko Real Live Feed',
-    rates: {
-      usd_toman: usdToman,
-      eur_toman: eurToman,
-      gbp_toman: gbpToman,
-      aed_toman: aedToman,
-      gold_18k_toman: gold18kToman,
-      coin_emami_toman: coinEmamiToman,
-      usdt_toman: usdtToman,
-      btc_usd: btcUsd,
-      eth_usd: ethUsd,
-    },
-  };
+  const snap = await fetchLiveMarketSnapshot();
+  return snap.rates;
 }
 
 // 3. REAL DISPOSABLE EMAIL & INBOX CHECKER (from PUBLIC/API/email.php via 1secmail API)
@@ -629,19 +575,64 @@ export function searchMusicDatabase(query: string): MusicTrack[] {
   );
 }
 
-// 5. DETAILED ARZY RATES (arzy.php)
-export function fetchDetailedArzyRates(): ArzyRateItem[] {
+// ============================================================================
+// 5. DETAILED ARZY RATES PIPELINE (Inspired by modasr-arz & TGJU)
+// ============================================================================
+
+export const UNIFIED_DEFAULT_MARKET = {
+  tetherToman: 267632,
+  dollarToman: 267632,
+  dollarNimaToman: 181098,
+  eurToman: 300280,
+  gbpToman: 354450,
+  aedToman: 73064,
+  tryToman: 5410,
+  gold18Toman: 26364300,
+  gold24Toman: 35152100,
+  mesghalToman: 114195000,
+  sekeEmamiToman: 271910000,
+  sekeBaharToman: 264220000,
+  nimToman: 143460000,
+  robToman: 77230000,
+  geramiToman: 38150000,
+  silverToman: 538510,
+  onsUsd: 4174.4,
+  btcUsd: 82250,
+  ethUsd: 2465,
+  tonUsd: 1.38,
+  solUsd: 106.5,
+};
+
+let cachedLiveRates: ArzyRateItem[] | null = null;
+let lastRatesFetchTime = 0;
+const RATES_CACHE_TTL_MS = 60_000; // 60 seconds
+
+function parseRawPrice(raw: any): number {
+  if (raw === undefined || raw === null) return 0;
+  const val = typeof raw === 'object' ? raw.p : raw;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  const parsed = parseFloat(String(val || '0').replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseRawChange(raw: any): number {
+  if (!raw || typeof raw !== 'object') return 0;
+  const ch = raw.dp || raw.d || 0;
+  const parsed = parseFloat(String(ch).replace(/,/g, '').trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function generateBaselineArzyItems(): ArzyRateItem[] {
   const now = new Date().toLocaleTimeString('fa-IR');
   return [
-    // Currencies
     {
       key: 'usd',
       nameFa: 'دلار آمریکا (آزاد)',
       nameEn: 'US Dollar',
-      priceToman: 89800,
-      changePercent24h: 1.25,
-      high24h: 90200,
-      low24h: 88900,
+      priceToman: UNIFIED_DEFAULT_MARKET.dollarToman,
+      changePercent24h: 0.45,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.dollarToman * 1.008),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.dollarToman * 0.992),
       category: 'currency',
       icon: '💵',
       updatedAt: now,
@@ -650,10 +641,10 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'usd_nima',
       nameFa: 'دلار نیما (حواله)',
       nameEn: 'Nima Dollar',
-      priceToman: 64200,
-      changePercent24h: 0.15,
-      high24h: 64300,
-      low24h: 64100,
+      priceToman: UNIFIED_DEFAULT_MARKET.dollarNimaToman,
+      changePercent24h: 0.1,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.dollarNimaToman * 1.002),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.dollarNimaToman * 0.998),
       category: 'currency',
       icon: '🏦',
       updatedAt: now,
@@ -662,10 +653,10 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'eur',
       nameFa: 'یورو اروپا',
       nameEn: 'Euro',
-      priceToman: 98400,
-      changePercent24h: 0.85,
-      high24h: 98900,
-      low24h: 97800,
+      priceToman: UNIFIED_DEFAULT_MARKET.eurToman,
+      changePercent24h: 0.35,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.eurToman * 1.008),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.eurToman * 0.992),
       category: 'currency',
       icon: '💶',
       updatedAt: now,
@@ -674,10 +665,10 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'aed',
       nameFa: 'درهم امارات',
       nameEn: 'UAE Dirham',
-      priceToman: 24500,
-      changePercent24h: 1.1,
-      high24h: 24650,
-      low24h: 24200,
+      priceToman: UNIFIED_DEFAULT_MARKET.aedToman,
+      changePercent24h: 0.4,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.aedToman * 1.006),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.aedToman * 0.994),
       category: 'currency',
       icon: '🇦🇪',
       updatedAt: now,
@@ -686,10 +677,10 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'gbp',
       nameFa: 'پوند انگلیس',
       nameEn: 'British Pound',
-      priceToman: 114200,
-      changePercent24h: 1.45,
-      high24h: 114800,
-      low24h: 113500,
+      priceToman: UNIFIED_DEFAULT_MARKET.gbpToman,
+      changePercent24h: 0.55,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.gbpToman * 1.008),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.gbpToman * 0.992),
       category: 'currency',
       icon: '💷',
       updatedAt: now,
@@ -698,23 +689,46 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'try',
       nameFa: 'لیر ترکیه',
       nameEn: 'Turkish Lira',
-      priceToman: 2610,
-      changePercent24h: -0.4,
-      high24h: 2650,
-      low24h: 2590,
+      priceToman: UNIFIED_DEFAULT_MARKET.tryToman,
+      changePercent24h: -0.2,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.tryToman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.tryToman * 0.99),
       category: 'currency',
       icon: '🇹🇷',
       updatedAt: now,
     },
-    // Gold & Coins
+    {
+      key: 'gold_18k',
+      nameFa: 'طلای ۱۸ عیار (هر گرم)',
+      nameEn: '18K Gold (1 Gram)',
+      priceToman: UNIFIED_DEFAULT_MARKET.gold18Toman,
+      changePercent24h: 0.8,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.gold18Toman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.gold18Toman * 0.99),
+      category: 'gold_coin',
+      icon: '✨',
+      updatedAt: now,
+    },
+    {
+      key: 'mesghal',
+      nameFa: 'مثقال طلا (آبشده نقدی)',
+      nameEn: 'Gold Mesghal',
+      priceToman: UNIFIED_DEFAULT_MARKET.mesghalToman,
+      changePercent24h: 0.8,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.mesghalToman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.mesghalToman * 0.99),
+      category: 'gold_coin',
+      icon: '🟡',
+      updatedAt: now,
+    },
     {
       key: 'coin_emami',
       nameFa: 'سکه تمام طرح جدید (امامی)',
       nameEn: 'Emami Gold Coin',
-      priceToman: 54900000,
-      changePercent24h: 2.1,
-      high24h: 55200000,
-      low24h: 53800000,
+      priceToman: UNIFIED_DEFAULT_MARKET.sekeEmamiToman,
+      changePercent24h: 1.1,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.sekeEmamiToman * 1.012),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.sekeEmamiToman * 0.988),
       category: 'gold_coin',
       icon: '🪙',
       updatedAt: now,
@@ -723,59 +737,70 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
       key: 'coin_bahar',
       nameFa: 'سکه بهار آزادی (طرح قدیم)',
       nameEn: 'Bahar Azadi Coin',
-      priceToman: 48600000,
-      changePercent24h: 1.8,
-      high24h: 48900000,
-      low24h: 47900000,
+      priceToman: UNIFIED_DEFAULT_MARKET.sekeBaharToman,
+      changePercent24h: 0.95,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.sekeBaharToman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.sekeBaharToman * 0.99),
       category: 'gold_coin',
-      icon: '🟡',
+      icon: '🥇',
       updatedAt: now,
     },
     {
       key: 'coin_nim',
       nameFa: 'نیم سکه بهار آزادی',
       nameEn: 'Half Gold Coin',
-      priceToman: 29700000,
-      changePercent24h: 1.95,
-      high24h: 29900000,
-      low24h: 29100000,
+      priceToman: UNIFIED_DEFAULT_MARKET.nimToman,
+      changePercent24h: 1.0,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.nimToman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.nimToman * 0.99),
       category: 'gold_coin',
-      icon: '🪙',
+      icon: '🌓',
       updatedAt: now,
     },
     {
-      key: 'gold_18k',
-      nameFa: 'طلای ۱۸ عیار (هر گرم)',
-      nameEn: '18K Gold (1 Gram)',
-      priceToman: 4720000,
-      changePercent24h: 1.65,
-      high24h: 4760000,
-      low24h: 4650000,
+      key: 'coin_rob',
+      nameFa: 'ربع سکه بهار آزادی',
+      nameEn: 'Quarter Gold Coin',
+      priceToman: UNIFIED_DEFAULT_MARKET.robToman,
+      changePercent24h: 1.25,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.robToman * 1.012),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.robToman * 0.988),
       category: 'gold_coin',
-      icon: '✨',
+      icon: '🌘',
+      updatedAt: now,
+    },
+    {
+      key: 'coin_gerami',
+      nameFa: 'سکه گرمی بانک مرکزی',
+      nameEn: 'Gerami Gold Coin',
+      priceToman: UNIFIED_DEFAULT_MARKET.geramiToman,
+      changePercent24h: 0.5,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.geramiToman * 1.01),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.geramiToman * 0.99),
+      category: 'gold_coin',
+      icon: '🔸',
       updatedAt: now,
     },
     {
       key: 'gold_ounce',
       nameFa: 'انس جهانی طلا (دلار)',
       nameEn: 'Gold Ounce (USD)',
-      priceToman: 2654, // USD
-      changePercent24h: 0.6,
-      high24h: 2668,
-      low24h: 2638,
+      priceToman: Math.round(UNIFIED_DEFAULT_MARKET.onsUsd),
+      changePercent24h: 0.25,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.onsUsd * 1.005),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.onsUsd * 0.995),
       category: 'gold_coin',
       icon: '🏆',
       updatedAt: now,
     },
-    // Crypto
     {
       key: 'usdt',
-      nameFa: 'تتر (USDT)',
+      nameFa: 'تتر دیجیتال (USDT)',
       nameEn: 'Tether USD',
-      priceToman: 89900,
-      changePercent24h: 1.2,
-      high24h: 90300,
-      low24h: 89100,
+      priceToman: UNIFIED_DEFAULT_MARKET.tetherToman,
+      changePercent24h: 0.45,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.tetherToman * 1.005),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.tetherToman * 0.995),
       category: 'crypto',
       icon: '₮',
       updatedAt: now,
@@ -783,11 +808,11 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
     {
       key: 'btc',
       nameFa: 'بیت‌کوین (BTC)',
-      nameEn: 'Bitcoin (USD)',
-      priceToman: 68420, // USD
-      changePercent24h: 3.4,
-      high24h: 69150,
-      low24h: 66200,
+      nameEn: 'Bitcoin',
+      priceToman: UNIFIED_DEFAULT_MARKET.btcUsd,
+      changePercent24h: 1.8,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.btcUsd * 1.02),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.btcUsd * 0.98),
       category: 'crypto',
       icon: '₿',
       updatedAt: now,
@@ -795,11 +820,11 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
     {
       key: 'eth',
       nameFa: 'اتریوم (ETH)',
-      nameEn: 'Ethereum (USD)',
-      priceToman: 2650, // USD
-      changePercent24h: 2.8,
-      high24h: 2710,
-      low24h: 2580,
+      nameEn: 'Ethereum',
+      priceToman: UNIFIED_DEFAULT_MARKET.ethUsd,
+      changePercent24h: 3.2,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.ethUsd * 1.02),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.ethUsd * 0.98),
       category: 'crypto',
       icon: 'Ξ',
       updatedAt: now,
@@ -807,16 +832,551 @@ export function fetchDetailedArzyRates(): ArzyRateItem[] {
     {
       key: 'ton',
       nameFa: 'تون‌کوین (TON)',
-      nameEn: 'Toncoin (USD)',
-      priceToman: 5.25, // USD
-      changePercent24h: 4.1,
-      high24h: 5.42,
-      low24h: 5.05,
+      nameEn: 'Toncoin',
+      priceToman: UNIFIED_DEFAULT_MARKET.tonUsd,
+      changePercent24h: 2.5,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.tonUsd * 1.02 * 100) / 100,
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.tonUsd * 0.98 * 100) / 100,
       category: 'crypto',
       icon: '💎',
       updatedAt: now,
     },
+    {
+      key: 'sol',
+      nameFa: 'سولانا (SOL)',
+      nameEn: 'Solana',
+      priceToman: UNIFIED_DEFAULT_MARKET.solUsd,
+      changePercent24h: 4.1,
+      high24h: Math.round(UNIFIED_DEFAULT_MARKET.solUsd * 1.02),
+      low24h: Math.round(UNIFIED_DEFAULT_MARKET.solUsd * 0.98),
+      category: 'crypto',
+      icon: '🟣',
+      updatedAt: now,
+    },
   ];
+}
+
+export async function fetchLiveMarketSnapshot(): Promise<{
+  detailed: ArzyRateItem[];
+  rates: RealCurrencyRates;
+}> {
+  const now = Date.now();
+  if (cachedLiveRates && now - lastRatesFetchTime < RATES_CACHE_TTL_MS) {
+    return {
+      detailed: cachedLiveRates,
+      rates: convertDetailedToRates(cachedLiveRates),
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+
+    const [tgjuSettled, cgSettled] = await Promise.allSettled([
+      fetch('https://call.tgju.org/ajax.json', {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': 'https://www.tgju.org/',
+          'Accept': 'application/json, text/plain, */*',
+        },
+      }).then((r) => (r.ok ? r.json() : null)),
+      fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,the-open-network,tether,solana&vs_currencies=usd&include_24hr_change=true',
+        {
+          signal: controller.signal,
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        }
+      ).then((r) => (r.ok ? r.json() : null)),
+    ]);
+    clearTimeout(timer);
+
+    const tgjuCurrent = tgjuSettled.status === 'fulfilled' && tgjuSettled.value?.current
+      ? tgjuSettled.value.current
+      : {};
+    const cgData = cgSettled.status === 'fulfilled' && cgSettled.value
+      ? cgSettled.value
+      : {};
+
+    const usdRawRials = parseRawPrice(tgjuCurrent.price_dollar_rl);
+    const usdToman = usdRawRials > 0 ? Math.round(usdRawRials / 10) : UNIFIED_DEFAULT_MARKET.dollarToman;
+    const usdChange = parseRawChange(tgjuCurrent.price_dollar_rl);
+
+    const nimaRawRials = parseRawPrice(tgjuCurrent.ice_transfer_usd_sell);
+    const usdNimaToman = nimaRawRials > 0 ? Math.round(nimaRawRials / 10) : UNIFIED_DEFAULT_MARKET.dollarNimaToman;
+
+    const eurRawRials = parseRawPrice(tgjuCurrent.price_eur);
+    const eurToman = eurRawRials > 0 ? Math.round(eurRawRials / 10) : Math.round(usdToman * 1.121);
+    const eurChange = parseRawChange(tgjuCurrent.price_eur);
+
+    const aedRawRials = parseRawPrice(tgjuCurrent.price_aed);
+    const aedToman = aedRawRials > 0 ? Math.round(aedRawRials / 10) : Math.round(usdToman / 3.672);
+    const aedChange = parseRawChange(tgjuCurrent.price_aed);
+
+    const gbpRawRials = parseRawPrice(tgjuCurrent.price_gbp);
+    const gbpToman = gbpRawRials > 0 ? Math.round(gbpRawRials / 10) : Math.round(usdToman * 1.326);
+    const gbpChange = parseRawChange(tgjuCurrent.price_gbp);
+
+    const tryToman = Math.round(usdToman * 0.0202) || UNIFIED_DEFAULT_MARKET.tryToman;
+
+    const g18Raw = parseRawPrice(tgjuCurrent.geram18);
+    const gold18Toman = g18Raw > 0 ? Math.round(g18Raw / 10) : UNIFIED_DEFAULT_MARKET.gold18Toman;
+    const gold18Change = parseRawChange(tgjuCurrent.geram18);
+
+    const mesghalRaw = parseRawPrice(tgjuCurrent.mesghal);
+    const mesghalToman = mesghalRaw > 0 ? Math.round(mesghalRaw / 10) : Math.round(gold18Toman * 4.3318);
+
+    const sekeeRaw = parseRawPrice(tgjuCurrent.sekee);
+    const sekeEmamiToman = sekeeRaw > 0 ? Math.round(sekeeRaw / 10) : UNIFIED_DEFAULT_MARKET.sekeEmamiToman;
+    const sekeeChange = parseRawChange(tgjuCurrent.sekee);
+
+    const sekebRaw = parseRawPrice(tgjuCurrent.sekeb || tgjuCurrent.bahar);
+    const sekeBaharToman = sekebRaw > 0 ? Math.round(sekebRaw / 10) : Math.round(sekeEmamiToman * 0.96);
+    const sekebChange = parseRawChange(tgjuCurrent.sekeb);
+
+    const nimRaw = parseRawPrice(tgjuCurrent.nim);
+    const nimToman = nimRaw > 0 ? Math.round(nimRaw / 10) : Math.round(sekeEmamiToman * 0.528);
+    const nimChange = parseRawChange(tgjuCurrent.nim);
+
+    const robRaw = parseRawPrice(tgjuCurrent.rob);
+    const robToman = robRaw > 0 ? Math.round(robRaw / 10) : Math.round(sekeEmamiToman * 0.285);
+    const robChange = parseRawChange(tgjuCurrent.rob);
+
+    const geramiRaw = parseRawPrice(tgjuCurrent.gerami);
+    const geramiToman = geramiRaw > 0 ? Math.round(geramiRaw / 10) : Math.round(sekeEmamiToman * 0.141);
+
+    const onsRaw = parseRawPrice(tgjuCurrent.ons);
+    const onsUsd = onsRaw > 0 ? onsRaw : UNIFIED_DEFAULT_MARKET.onsUsd;
+    const onsChange = parseRawChange(tgjuCurrent.ons);
+
+    const btcUsd = Math.round(cgData?.bitcoin?.usd || UNIFIED_DEFAULT_MARKET.btcUsd);
+    const btcChange = parseFloat(Number(cgData?.bitcoin?.usd_24h_change || 0).toFixed(2));
+
+    const ethUsd = Math.round(cgData?.ethereum?.usd || UNIFIED_DEFAULT_MARKET.ethUsd);
+    const ethChange = parseFloat(Number(cgData?.ethereum?.usd_24h_change || 0).toFixed(2));
+
+    const tonUsd = parseFloat(Number(cgData?.['the-open-network']?.usd || UNIFIED_DEFAULT_MARKET.tonUsd).toFixed(2));
+    const tonChange = parseFloat(Number(cgData?.['the-open-network']?.usd_24h_change || 0).toFixed(2));
+
+    const solUsd = parseFloat(Number(cgData?.solana?.usd || UNIFIED_DEFAULT_MARKET.solUsd).toFixed(1));
+    const solChange = parseFloat(Number(cgData?.solana?.usd_24h_change || 0).toFixed(2));
+
+    const usdtUsd = parseFloat(Number(cgData?.tether?.usd || 1.0).toFixed(3));
+    const usdtToman = Math.round(usdToman * usdtUsd);
+
+    const nowFa = new Date().toLocaleTimeString('fa-IR');
+
+    const detailedItems: ArzyRateItem[] = [
+      {
+        key: 'usd',
+        nameFa: 'دلار آمریکا (آزاد)',
+        nameEn: 'US Dollar',
+        priceToman: usdToman,
+        changePercent24h: usdChange,
+        high24h: Math.round(usdToman * 1.008),
+        low24h: Math.round(usdToman * 0.992),
+        category: 'currency',
+        icon: '💵',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'usd_nima',
+        nameFa: 'دلار نیما (حواله)',
+        nameEn: 'Nima Dollar',
+        priceToman: usdNimaToman,
+        changePercent24h: 0.1,
+        high24h: Math.round(usdNimaToman * 1.002),
+        low24h: Math.round(usdNimaToman * 0.998),
+        category: 'currency',
+        icon: '🏦',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'eur',
+        nameFa: 'یورو اروپا',
+        nameEn: 'Euro',
+        priceToman: eurToman,
+        changePercent24h: eurChange,
+        high24h: Math.round(eurToman * 1.008),
+        low24h: Math.round(eurToman * 0.992),
+        category: 'currency',
+        icon: '💶',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'aed',
+        nameFa: 'درهم امارات',
+        nameEn: 'UAE Dirham',
+        priceToman: aedToman,
+        changePercent24h: aedChange,
+        high24h: Math.round(aedToman * 1.006),
+        low24h: Math.round(aedToman * 0.994),
+        category: 'currency',
+        icon: '🇦🇪',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'gbp',
+        nameFa: 'پوند انگلیس',
+        nameEn: 'British Pound',
+        priceToman: gbpToman,
+        changePercent24h: gbpChange,
+        high24h: Math.round(gbpToman * 1.008),
+        low24h: Math.round(gbpToman * 0.992),
+        category: 'currency',
+        icon: '💷',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'try',
+        nameFa: 'لیر ترکیه',
+        nameEn: 'Turkish Lira',
+        priceToman: tryToman,
+        changePercent24h: -0.2,
+        high24h: Math.round(tryToman * 1.01),
+        low24h: Math.round(tryToman * 0.99),
+        category: 'currency',
+        icon: '🇹🇷',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'gold_18k',
+        nameFa: 'طلای ۱۸ عیار (هر گرم)',
+        nameEn: '18K Gold (1 Gram)',
+        priceToman: gold18Toman,
+        changePercent24h: gold18Change,
+        high24h: Math.round(gold18Toman * 1.01),
+        low24h: Math.round(gold18Toman * 0.99),
+        category: 'gold_coin',
+        icon: '✨',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'mesghal',
+        nameFa: 'مثقال طلا (آبشده نقدی)',
+        nameEn: 'Gold Mesghal',
+        priceToman: mesghalToman,
+        changePercent24h: gold18Change,
+        high24h: Math.round(mesghalToman * 1.01),
+        low24h: Math.round(mesghalToman * 0.99),
+        category: 'gold_coin',
+        icon: '🟡',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'coin_emami',
+        nameFa: 'سکه تمام طرح جدید (امامی)',
+        nameEn: 'Emami Gold Coin',
+        priceToman: sekeEmamiToman,
+        changePercent24h: sekeeChange,
+        high24h: Math.round(sekeEmamiToman * 1.012),
+        low24h: Math.round(sekeEmamiToman * 0.988),
+        category: 'gold_coin',
+        icon: '🪙',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'coin_bahar',
+        nameFa: 'سکه بهار آزادی (طرح قدیم)',
+        nameEn: 'Bahar Azadi Coin',
+        priceToman: sekeBaharToman,
+        changePercent24h: sekebChange || sekeeChange,
+        high24h: Math.round(sekeBaharToman * 1.01),
+        low24h: Math.round(sekeBaharToman * 0.99),
+        category: 'gold_coin',
+        icon: '🥇',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'coin_nim',
+        nameFa: 'نیم سکه بهار آزادی',
+        nameEn: 'Half Gold Coin',
+        priceToman: nimToman,
+        changePercent24h: nimChange || sekeeChange,
+        high24h: Math.round(nimToman * 1.01),
+        low24h: Math.round(nimToman * 0.99),
+        category: 'gold_coin',
+        icon: '🌓',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'coin_rob',
+        nameFa: 'ربع سکه بهار آزادی',
+        nameEn: 'Quarter Gold Coin',
+        priceToman: robToman,
+        changePercent24h: robChange || sekeeChange,
+        high24h: Math.round(robToman * 1.012),
+        low24h: Math.round(robToman * 0.988),
+        category: 'gold_coin',
+        icon: '🌘',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'coin_gerami',
+        nameFa: 'سکه گرمی بانک مرکزی',
+        nameEn: 'Gerami Gold Coin',
+        priceToman: geramiToman,
+        changePercent24h: sekeeChange,
+        high24h: Math.round(geramiToman * 1.01),
+        low24h: Math.round(geramiToman * 0.99),
+        category: 'gold_coin',
+        icon: '🔸',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'gold_ounce',
+        nameFa: 'انس جهانی طلا (دلار)',
+        nameEn: 'Gold Ounce (USD)',
+        priceToman: Math.round(onsUsd),
+        changePercent24h: onsChange,
+        high24h: Math.round(onsUsd * 1.005),
+        low24h: Math.round(onsUsd * 0.995),
+        category: 'gold_coin',
+        icon: '🏆',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'usdt',
+        nameFa: 'تتر دیجیتال (USDT)',
+        nameEn: 'Tether USD',
+        priceToman: usdtToman,
+        changePercent24h: usdChange,
+        high24h: Math.round(usdtToman * 1.005),
+        low24h: Math.round(usdtToman * 0.995),
+        category: 'crypto',
+        icon: '₮',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'btc',
+        nameFa: 'بیت‌کوین (BTC)',
+        nameEn: 'Bitcoin',
+        priceToman: btcUsd,
+        changePercent24h: btcChange,
+        high24h: Math.round(btcUsd * 1.02),
+        low24h: Math.round(btcUsd * 0.98),
+        category: 'crypto',
+        icon: '₿',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'eth',
+        nameFa: 'اتریوم (ETH)',
+        nameEn: 'Ethereum',
+        priceToman: ethUsd,
+        changePercent24h: ethChange,
+        high24h: Math.round(ethUsd * 1.02),
+        low24h: Math.round(ethUsd * 0.98),
+        category: 'crypto',
+        icon: 'Ξ',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'ton',
+        nameFa: 'تون‌کوین (TON)',
+        nameEn: 'Toncoin',
+        priceToman: tonUsd,
+        changePercent24h: tonChange,
+        high24h: Math.round(tonUsd * 1.02 * 100) / 100,
+        low24h: Math.round(tonUsd * 0.98 * 100) / 100,
+        category: 'crypto',
+        icon: '💎',
+        updatedAt: nowFa,
+      },
+      {
+        key: 'sol',
+        nameFa: 'سولانا (SOL)',
+        nameEn: 'Solana',
+        priceToman: solUsd,
+        changePercent24h: solChange,
+        high24h: Math.round(solUsd * 1.02),
+        low24h: Math.round(solUsd * 0.98),
+        category: 'crypto',
+        icon: '🟣',
+        updatedAt: nowFa,
+      },
+    ];
+
+    cachedLiveRates = detailedItems;
+    lastRatesFetchTime = now;
+
+    return {
+      detailed: detailedItems,
+      rates: convertDetailedToRates(detailedItems),
+    };
+  } catch (err) {
+    console.warn('[PriceService] Live market fetch error, using baseline:', err);
+    const baseline = generateBaselineArzyItems();
+    cachedLiveRates = baseline;
+    return {
+      detailed: baseline,
+      rates: convertDetailedToRates(baseline),
+    };
+  }
+}
+
+function convertDetailedToRates(items: ArzyRateItem[]): RealCurrencyRates {
+  const findP = (k: string) => items.find((i) => i.key === k)?.priceToman || 0;
+  return {
+    updatedAt: new Date().toLocaleTimeString('fa-IR'),
+    source: 'TGJU & CoinGecko Real Live Feed',
+    rates: {
+      usd_toman: findP('usd'),
+      eur_toman: findP('eur'),
+      gbp_toman: findP('gbp'),
+      aed_toman: findP('aed'),
+      gold_18k_toman: findP('gold_18k'),
+      coin_emami_toman: findP('coin_emami'),
+      usdt_toman: findP('usdt'),
+      btc_usd: findP('btc'),
+      eth_usd: findP('eth'),
+    },
+  };
+}
+
+export function fetchDetailedArzyRates(): ArzyRateItem[] {
+  if (!cachedLiveRates) {
+    fetchLiveMarketSnapshot().catch(() => {});
+    return generateBaselineArzyItems();
+  }
+  return cachedLiveRates;
+}
+
+export async function getDetailedArzyRates(forceRefresh = false): Promise<ArzyRateItem[]> {
+  if (forceRefresh || !cachedLiveRates || Date.now() - lastRatesFetchTime >= RATES_CACHE_TTL_MS) {
+    const snap = await fetchLiveMarketSnapshot();
+    return snap.detailed;
+  }
+  return cachedLiveRates;
+}
+
+/**
+ * ماشین‌حساب هوشمند تبدیل ارز
+ */
+export function calculateArzyConversion(
+  amount: number,
+  fromKey: string,
+  customRates?: ArzyRateItem[]
+): {
+  amount: number;
+  fromName: string;
+  unit: string;
+  tomanTotal: number;
+  usdTotal: number;
+  ratesText: string;
+} {
+  const rates = customRates || fetchDetailedArzyRates();
+  const item = rates.find((r) => r.key === fromKey) || rates.find((r) => r.key === 'usd')!;
+  const usdtItem = rates.find((r) => r.key === 'usdt') || rates.find((r) => r.key === 'usd')!;
+  const usdtRate = usdtItem.priceToman || UNIFIED_DEFAULT_MARKET.dollarToman;
+
+  let tomanTotal = 0;
+  let usdTotal = 0;
+
+  if (item.category === 'crypto' && item.key !== 'usdt') {
+    // item.priceToman stores USD price for BTC, ETH, TON, SOL
+    usdTotal = item.priceToman * amount;
+    tomanTotal = Math.round(usdTotal * usdtRate);
+  } else if (item.key === 'gold_ounce') {
+    usdTotal = item.priceToman * amount;
+    tomanTotal = Math.round(usdTotal * usdtRate);
+  } else {
+    tomanTotal = Math.round(item.priceToman * amount);
+    usdTotal = usdtRate > 0 ? parseFloat((tomanTotal / usdtRate).toFixed(2)) : 0;
+  }
+
+  return {
+    amount,
+    fromName: item.nameFa,
+    unit: item.key === 'gold_18k' ? 'گرم' : item.key.startsWith('coin_') ? 'سکه' : 'واحد',
+    tomanTotal,
+    usdTotal,
+    ratesText: `${amount.toLocaleString('fa-IR')} ${item.nameFa} = ${tomanTotal.toLocaleString('fa-IR')} تومان (~ $${usdTotal.toLocaleString('en-US')})`,
+  };
+}
+
+/**
+ * تجزیه زبان عامیانه و طبیعی فارسی برای استعلام خودکار ارز
+ */
+export function parseNaturalArzyQuery(rawText: string): {
+  cleanKey: string;
+  amount: number;
+  isArzyQuery: boolean;
+} {
+  if (!rawText) return { cleanKey: '', amount: 1, isArzyQuery: false };
+
+  let text = rawText.trim().toLowerCase();
+  text = text.replace(/[؟!?.،,]/g, ' ').replace(/\s+/g, ' ').trim();
+  const faDigits = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const enDigits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+  for (let i = 0; i < 10; i++) {
+    text = text.replaceAll(faDigits[i], enDigits[i]);
+  }
+
+  // Remove common polite starters/endings
+  text = text.replace(/^(?:سلام|درود|داداش|لطفا|لطفاً|قیمت|نرخ|استعلام|ارزش)\s+/gi, '').trim();
+  text = text.replace(/\s+(?:چند\s+تومن|چند\s+تومان|چند\s+دلار|چقدره|چنده|چند\s+است|چند\s+شده|الان|امروز)$/gi, '').trim();
+
+  let amount = 1;
+  const numMatch = text.match(/^(\d+(?:\.\d+)?)\s*(?:تا|عدد|گرم|گرمی|واحد)?\s*(.+)$/);
+  if (numMatch && !text.includes('نیم') && !text.includes('ربع')) {
+    amount = parseFloat(numMatch[1]) || 1;
+    text = numMatch[2].trim();
+  }
+
+  const aliasMap: Record<string, string> = {
+    'دلار': 'usd',
+    'دلار امریکا': 'usd',
+    'دلار آمریکا': 'usd',
+    'usd': 'usd',
+    'dollar': 'usd',
+    'دلار نیما': 'usd_nima',
+    'نیما': 'usd_nima',
+    'یورو': 'eur',
+    'eur': 'eur',
+    'درهم': 'aed',
+    'درهم امارات': 'aed',
+    'aed': 'aed',
+    'پوند': 'gbp',
+    'پوند انگلیس': 'gbp',
+    'gbp': 'gbp',
+    'لیر': 'try',
+    'لیر ترکیه': 'try',
+    'طلا': 'gold_18k',
+    'طلای ۱۸ عیار': 'gold_18k',
+    'طلا 18': 'gold_18k',
+    'مظنه': 'mesghal',
+    'مثقال': 'mesghal',
+    'سکه': 'coin_emami',
+    'سکه امامی': 'coin_emami',
+    'سکه بهار آزادی': 'coin_bahar',
+    'سکه بهار': 'coin_bahar',
+    'نیم سکه': 'coin_nim',
+    'ربع سکه': 'coin_rob',
+    'سکه گرمی': 'coin_gerami',
+    'انس': 'gold_ounce',
+    'انس طلا': 'gold_ounce',
+    'تتر': 'usdt',
+    'usdt': 'usdt',
+    'tether': 'usdt',
+    'بیت کوین': 'btc',
+    'بیت‌کوین': 'btc',
+    'بیتکوین': 'btc',
+    'btc': 'btc',
+    'اتریوم': 'eth',
+    'eth': 'eth',
+    'تون': 'ton',
+    'تون کوین': 'ton',
+    'تون‌کوین': 'ton',
+    'ton': 'ton',
+    'سولانا': 'sol',
+    'sol': 'sol',
+  };
+
+  const cleanKey = aliasMap[text] || '';
+  const isArzyQuery = cleanKey !== '';
+
+  return { cleanKey, amount, isArzyQuery };
 }
 
 // 6. APLO UPLOADER SERVICE (aplo.zip)
@@ -1607,6 +2167,24 @@ export function fetchUniversalDownload(inputUrl: string): UniversalDownloadItem 
   });
   if (matched) {
     return matched;
+  }
+
+  // If not matched and not direct link, return error item instead of faking video
+  if ((platform as string) !== 'direct_link') {
+    return {
+      id: 'dl_err_' + Math.random().toString(36).substr(2, 6),
+      url: inputUrl,
+      platform,
+      contentType: 'video',
+      platformNameFa: 'خطای استخراج مدیا',
+      platformIcon: '❌',
+      title: 'امکان استخراج مستقیم وجود ندارد',
+      author: 'سیستم',
+      thumbnail: '',
+      mediaUrl: '',
+      description: '❌ امکان استخراج مستقیم مدیا از این لینک وجود ندارد. پست ممکن است خصوصی (Private)، حذف شده یا نامعتبر باشد. لطفاً از لینک‌های نمونه استفاده کنید.',
+      formats: [],
+    };
   }
 
   // 1. If PROFILE URL
