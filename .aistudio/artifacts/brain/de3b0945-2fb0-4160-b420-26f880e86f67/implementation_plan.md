@@ -1,29 +1,29 @@
-# Implementation Plan - Production-Grade Bilingual Installer & Deployment Manager
+# Implementation Plan - MODASR HUBOT Production-Grade Bilingual Installer Repair
 
 ## User Request & Requirements
-1. Inspect main branch and latest commits.
-2. Modify root `install.sh` to fully integrate bilingual support.
-3. At startup, display working language selection menu (`[1] فارسی`, `[2] English`) when no preference file exists.
-4. Load selected locale from `locales/fa.sh` or `locales/en.sh`.
-5. Connect localized variables to all installer steps, prompts, errors, and management menus.
-6. Persist selected language in `.install_lang` and allow changing via menu option 13.
-7. Ensure management options report accurate operation status (no fake successes).
-8. Populate complete, non-placeholder documentation in `INSTALL_GUIDE_EN.md` and `README_FA.md`.
-9. Review and harden installer security (no `eval`, secret masking, robust backup/restore).
-10. Implement thorough automated testing in `tests/installer/test_installer.sh`.
+1. Inspect repository state, working tree, and files (`install.sh`, locales, documentation).
+2. Complete Persian and English localization (`locales/fa.sh`, `locales/en.sh`) with zero untranslated strings and correct shebangs (`#!/usr/bin/env bash`).
+3. Fix main menu and all actions (16 options properly mapped without fake success messages).
+4. Prioritize `systemd` service management for production deployment.
+5. Secure Bash installer (remove unsafe `eval`, input validation, strict permissions `600` on `.env`, secret masking in logs).
+6. Support robust CLI mode (`--help`, `--status`, `--restart`, `--backup`, `--update`, `--uninstall`) without hanging in non-interactive environments.
+7. Update documentation (`README.md`, `README_FA.md`, `INSTALL_GUIDE_FA.md`, `INSTALL_GUIDE_EN.md`).
+8. Implement comprehensive automated tests in `tests/installer/test_installer.sh`.
 
 ## Proposed Changes
 
-### 1. Locale Files Enhancement (`locales/fa.sh` & `locales/en.sh`)
-- Expand locale keys to cover all wizard steps, prompts, success messages, error states, and management options.
+### 1. Locale Files (`locales/fa.sh` & `locales/en.sh`)
+- Ensure all localization keys exist in both files, cover all 16 menu options, wizard steps, errors, warnings, and successes.
 
 ### 2. Root `install.sh` Overhaul
-- Implement robust `select_language` function at startup (prompting user if `.install_lang` is missing).
-- Replace hardcoded Persian strings with localized variables `$L_...`.
-- Implement safe execution traps (`set -Eeuo pipefail` where compatible, secret masking, etc.).
+- Implement robust language selection and persistence (`.install_lang`).
+- Correctly parse CLI arguments (`--help`, `--status`, `--restart`, `--backup`, `--update`, `--uninstall`) before launching interactive menus.
+- Map all 16 menu options to real actions or clear unavailability notices.
+- Implement systemd service management as primary process manager.
+- Apply security hardening (`set -Eeuo pipefail`, input validation, restrictive permissions).
 
-### 3. Documentation Completion (`INSTALL_GUIDE_EN.md` & `README_FA.md`)
-- Provide comprehensive, accurate documentation for both languages.
+### 3. Documentation (`README.md`, `README_FA.md`, `INSTALL_GUIDE_FA.md`, `INSTALL_GUIDE_EN.md`)
+- Ensure accurate, non-placeholder documentation.
 
 ### 4. Automated Testing (`tests/installer/test_installer.sh`)
-- Test locale selection, non-interactive language preference injection, syntax check, and status reporting.
+- Test syntax validation (`bash -n`), locale loading, CLI flags (`--help`, `--status`), language persistence, and non-interactive execution.
