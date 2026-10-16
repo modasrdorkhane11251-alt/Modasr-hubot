@@ -113,10 +113,11 @@ ask_prompt() {
     read -r user_input
   fi
 
+  # ✅ استفاده از printf -v به جای eval (ایمن)
   if [ -z "${user_input}" ]; then
-    eval "${var_name}=\"${default_val}\""
+    printf -v "${var_name}" '%s' "${default_val}"
   else
-    eval "${var_name}=\"${user_input}\""
+    printf -v "${var_name}" '%s' "${user_input}"
   fi
 }
 
@@ -331,6 +332,36 @@ uninstall_mode() {
 # شروع مراحل ۱۰ گانه نصب اصلی
 # ==============================================================================
 main_installer() {
+  # اگه زبان تنظیم نشده، بپرس
+  if [ ! -f "${PROJECT_DIR}/.install_lang" ] && [ -t 0 ]; then
+    clear
+    echo -e "${C_CYAN}${C_BOLD}"
+    echo "═══════════════════════════════════════════════════"
+    echo "         SlowMegaBot — MODASR HUBOT"
+    echo "═══════════════════════════════════════════════════"
+    echo -e "${C_RESET}"
+    echo ""
+    echo -e "${C_BOLD}Select your language / زبان خود را انتخاب کنید:${C_RESET}"
+    echo ""
+    echo "  [1] فارسی"
+    echo "  [2] English"
+    echo ""
+    echo -ne "${C_BOLD}Choice / انتخاب: ${C_RESET}"
+    read -r lang_choice
+
+    case "${lang_choice:-1}" in
+      2)
+        echo "LANG=en" > "${PROJECT_DIR}/.install_lang"
+        T_LANG_SAVED="Language preference saved"
+        ;;
+      *)
+        echo "LANG=fa" > "${PROJECT_DIR}/.install_lang"
+        ;;
+    esac
+
+    source "${PROJECT_DIR}/.install_lang" 2>/dev/null || LANG="fa"
+    load_language
+  fi
   check_root
   check_existing_install
   show_banner
@@ -887,26 +918,139 @@ interactive_menu() {
 }
 
 
-# اجرای اسکریپت با آرگومان‌های خط فرمان
-select_language
+# ==============================================================================
+# 📖 نمایش راهنما (Bilingual Help)
+# ==============================================================================
+show_help() {
+  cat << 'HELP_EOF'
+══════════════════════════════════════════════════════════════════
+  SlowMegaBot — Installation & Management Script
+  اسکریپت نصب و مدیریت SlowMegaBot
+══════════════════════════════════════════════════════════════════
 
-case "$1" in
+USAGE / روش استفاده:
+  bash install.sh [OPTIONS]
+
+OPTIONS / گزینه‌ها:
+  --help, -h          Show this help message / نمایش این راهنما
+  --status            Show service status / نمایش وضعیت سرویس
+  --restart           Restart the service / ری‌استارت سرویس
+  --backup            Create a backup / تهیه نسخه پشتیبان
+  --update            Update from git / به‌روزرسانی از گیت
+  --logs              Show recent logs / نمایش لاگ‌های اخیر
+  --uninstall         Remove systemd service / حذف سرویس سیستم
+  --lang <fa|en>      Set language / تعیین زبان
+  --port <port>       Application port (default: 3000) / پورت برنامه
+  --yes               Non-interactive mode / حالت بدون پرسش
+
+EXAMPLES / مثال‌ها:
+  bash install.sh                    # Interactive install / نصب تعاملی
+  bash install.sh --status           # Check status / بررسی وضعیت
+  bash install.sh --lang en          # Switch to English / تغییر به انگلیسی
+  bash install.sh --port 8080 --yes  # Non-interactive / بدون پرسش
+
+DOCUMENTATION / مستندات:
+  See INSTALL_GUIDE_FA.md or INSTALL_GUIDE_EN.md
+  به INSTALL_GUIDE_FA.md یا INSTALL_GUIDE_EN.md مراجعه کنید
+══════════════════════════════════════════════════════════════════
+HELP_EOF
+}
+
+# ==============================================================================
+# 🔀 مدیریت آرگومان‌های خط فرمان
+# ==============================================================================
+case "${1:-}" in
+  --help|-h)
+    show_help
+    exit 0
+    ;;
   --status)
+    if [ ! -f "${ENV_FILE}" ]; then
+      echo "❌ No installation found. Run 'bash install.sh' first."
+      echo "❌ نصبی یافت نشد. ابتدا 'bash install.sh' را اجرا کنید."
+      exit 1
+    fi
     run_health_check_mode
+    exit 0
     ;;
   --restart)
+    if [ ! -f "${ENV_FILE}" ]; then
+      echo "❌ No installation found."
+      exit 1
+    fi
     restart_service_mode
+    exit 0
     ;;
   --backup)
+    if [ ! -f "${ENV_FILE}" ]; then
+      echo "❌ No installation found."
+      exit 1
+    fi
     do_backup
+    exit 0
     ;;
   --update)
     update_project_mode
+    exit 0
+    ;;
+  --logs)
+    if command -v journalctl &>/dev/null && systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+      journalctl -u "${SERVICE_NAME}" -n 50 --no-pager
+    elif [ -f "${LOG_FILE}" ]; then
+      tail -n 50 "${LOG_FILE}"
+    else
+      echo "❌ No logs found."
+      exit 1
+    fi
+    exit 0
     ;;
   --uninstall)
     uninstall_mode
+    exit 0
+    ;;
+  --lang)
+    if [ -z "${2:-}" ]; then
+      echo "❌ Error: --lang requires 'fa' or 'en'"
+      echo "❌ خطا: --lang نیاز به 'fa' یا 'en' دارد"
+      exit 1
+    fi
+    case "$2" in
+      fa|en)
+        echo "LANG=$2" > "${PROJECT_DIR}/.install_lang"
+        echo "✅ Language set to: $2"
+        shift 2
+        main_installer
+        ;;
+      *)
+        echo "❌ Error: --lang must be 'fa' or 'en'"
+        exit 1
+        ;;
+    esac
+    ;;
+  --port)
+    if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]] || [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then
+      echo "❌ Error: --port requires a number between 1 and 65535"
+      echo "❌ خطا: --port نیاز به عددی بین ۱ تا ۶۵۵۳۵ دارد"
+      exit 1
+    fi
+    export FORCE_PORT="$2"
+    shift 2
+    main_installer
+    ;;
+  --yes)
+    export NON_INTERACTIVE=1
+    main_installer
+    ;;
+  "")
+    # بدون آرگومان — نصب تعاملی
+    main_installer
     ;;
   *)
-    interactive_menu
+    echo "❌ Unknown option: $1"
+    echo "❌ گزینه ناشناخته: $1"
+    echo ""
+    echo "Run 'bash install.sh --help' for usage."
+    echo "برای راهنما 'bash install.sh --help' را اجرا کنید."
+    exit 1
     ;;
 esac

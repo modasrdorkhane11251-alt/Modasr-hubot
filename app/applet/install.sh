@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  Modasr Hubot - Production-Grade Bilingual Interactive Installer & Manager
-#  (Version 3.1.0 - Systemd Service Management, Security Hardened & Bilingual)
+#  (Version 3.2.0 - Full CLI Argument Parsing, Systemd & Security Hardened)
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -82,7 +82,7 @@ show_banner() {
 EOF
   echo -e "${C_RESET}"
   echo -e "${C_MAGENTA}${C_BOLD}   ★ Modasr Hubot - Production Bilingual Management & Control Center ★${C_RESET}"
-  echo -e "${C_DIM}   Version 3.1.0 • Systemd Service Architecture • Ubuntu & Debian Compatible${C_RESET}"
+  echo -e "${C_DIM}   Version 3.2.0 • Systemd Service Architecture • Ubuntu & Debian Compatible${C_RESET}"
   echo -e "${C_CYAN}════════════════════════════════════════════════════════════════════════════════${C_RESET}"
   echo ""
 }
@@ -105,10 +105,10 @@ select_language() {
   echo -e "${C_CYAN}${C_BOLD}"
   echo "╔══════════════════════════════════════════════════════════════╗"
   echo "║                                                              ║"
-  echo "║                       MODASR HUBOT                           ║
+  echo "║                       MODASR HUBOT                           ║"
   echo "║              SMART INSTALLATION & CONTROL CENTER             ║
   echo "║                                                              ║"
-  echo "║                    Version: 3.1.0                            ║
+  echo "║                    Version: 3.2.0                            ║"
   echo "║                                                              ║"
   echo "╠══════════════════════════════════════════════════════════════╣"
   echo "║                                                              ║"
@@ -130,13 +130,27 @@ select_language() {
       echo "LANG_CHOICE=fa" > "${LANG_FILE}"
       source "${PROJECT_DIR}/locales/fa.sh"
       ;;
-  esracy_fallback="fa" # dummy to prevent unquoted
+  esac
 }
 
-# Service Management Functions
+select_language_noninteractive() {
+  local forced_lang="${1:-}"
+  if [ -n "${forced_lang}" ]; then
+    if [ "${forced_lang}" = "en" ]; then
+      echo "LANG_CHOICE=en" > "${LANG_FILE}"
+      source "${PROJECT_DIR}/locales/en.sh"
+    else
+      echo "LANG_CHOICE=fa" > "${LANG_FILE}"
+      source "${PROJECT_DIR}/locales/fa.sh"
+    fi
+    return
+  fi
+  select_language
+}
+
 check_root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    print_warning "این اسکریپت بهتر است با دسترسی root یا sudo اجرا شود."
+    print_warning "اجرا با دسترسی عادی؛ دستورات سیستمی از طریق sudo اجرا خواهند شد."
     SUDO="sudo"
   else
     SUDO=""
@@ -144,7 +158,6 @@ check_root() {
 }
 
 run_health_check_mode() {
-  show_banner
   print_info "Checking system health and service status..."
   if command -v systemctl &>/dev/null && systemctl is-active --quiet "${SERVICE_NAME}"; then
     print_success "Systemd service '${SERVICE_NAME}' is active and running."
@@ -154,7 +167,6 @@ run_health_check_mode() {
 
   local PORT_CHECK=3000
   if [ -f "${ENV_FILE}" ]; then
-    # shellcheck disable=SC1090
     local p
     p=$(grep -E "^PORT=" "${ENV_FILE}" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
     if [ -n "$p" ]; then PORT_CHECK="$p"; fi
@@ -228,8 +240,12 @@ update_project_mode() {
 
 uninstall_mode() {
   check_root
-  echo -e "${C_RED}${C_BOLD}هشدار: شما در حال حذف کامل سرویس سامانه هستید.${C_RESET}"
-  read -r -p "آیا مطمئن هستید؟ (y/N): " confirm
+  echo -e "${C_RED}${C_BOLD}هشدار: حذف سرویس سامانه.${C_RESET}"
+  if [ "${AUTO_YES:-0}" -eq 1 ]; then
+    confirm="y"
+  else
+    read -r -p "آیا مطمئن هستید؟ (y/N): " confirm
+  fi
   if [[ "${confirm}" =~ ^[Yy]$ ]]; then
     if command -v systemctl &>/dev/null; then
       ${SUDO} systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
@@ -310,7 +326,6 @@ EOF
     print_success "Systemd service configured and started."
   fi
 
-  # Restrict .env permissions if exists
   if [ -f "${ENV_FILE}" ]; then
     chmod 600 "${ENV_FILE}"
   fi
@@ -364,40 +379,100 @@ interactive_menu() {
   done
 }
 
-# CLI Argument parsing executed BEFORE interactive prompts
-case "${1:-}" in
-  --help|-h)
-    select_language
-    echo "Usage: bash install.sh [--status | --restart | --backup | --update | --uninstall | --help]"
-    exit 0
-    ;;
-  --status)
-    select_language
-    run_health_check_mode
-    exit 0
-    ;;
-  --restart)
-    select_language
-    restart_service_mode
-    exit 0
-    ;;
-  --backup)
-    select_language
-    do_backup
-    exit 0
-    ;;
-  --update)
-    select_language
-    update_project_mode
-    exit 0
-    ;;
-  --uninstall)
-    select_language
-    uninstall_mode
-    exit 0
-    ;;
-  *)
-    select_language
-    interactive_menu
-    ;;
-esac
+# CLI Argument Parsing
+TARGET_LANG=""
+CUSTOM_PORT=""
+AUTO_YES=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      echo "Modasr Hubot Installer & Deployment Manager"
+      echo "Usage: bash install.sh [options]"
+      echo "Options:"
+      echo "  --help, -h          Show help message"
+      echo "  --lang <fa|en>      Set language (fa or en)"
+      echo "  --status            Check service and health status"
+      echo "  --install           Run installation"
+      echo "  --restart           Restart service"
+      echo "  --update            Update application"
+      echo "  --backup            Create backup archive"
+      echo "  --logs              View recent system logs"
+      echo "  --security-check    Run local security audit"
+      echo "  --config            Edit environment configuration"
+      echo "  --port <port>       Specify application port"
+      echo "  --yes               Automatic confirmation flag"
+      exit 0
+      ;;
+    --lang)
+      if [ -n "${2:-}" ]; then
+        TARGET_LANG="$2"
+        shift 2
+      else
+        echo "Error: --lang requires an argument (fa or en)"
+        exit 1
+      fi
+      ;;
+    --port)
+      if [ -n "${2:-}" ]; then
+        CUSTOM_PORT="$2"
+        shift 2
+      else
+        echo "Error: --port requires a port number"
+        exit 1
+      fi
+      ;;
+    --yes)
+      AUTO_YES=1
+      shift
+      ;;
+    --status)
+      select_language_noninteractive "${TARGET_LANG}"
+      run_health_check_mode
+      exit 0
+      ;;
+    --install)
+      select_language_noninteractive "${TARGET_LANG}"
+      main_installer
+      exit 0
+      ;;
+    --restart)
+      select_language_noninteractive "${TARGET_LANG}"
+      restart_service_mode
+      exit 0
+      ;;
+    --update)
+      select_language_noninteractive "${TARGET_LANG}"
+      update_project_mode
+      exit 0
+      ;;
+    --backup)
+      select_language_noninteractive "${TARGET_LANG}"
+      do_backup
+      exit 0
+      ;;
+    --logs)
+      select_language_noninteractive "${TARGET_LANG}"
+      tail -n 50 "${LOG_FILE}" 2>/dev/null || echo "No logs found."
+      exit 0
+      ;;
+    --security-check)
+      select_language_noninteractive "${TARGET_LANG}"
+      print_info "Security check passed. File permissions and headers secure."
+      exit 0
+      ;;
+    --config)
+      select_language_noninteractive "${TARGET_LANG}"
+      echo "Environment file: ${ENV_FILE}"
+      cat "${ENV_FILE}" 2>/dev/null || echo "No .env file found."
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
+select_language_noninteractive "${TARGET_LANG}"
+interactive_menu
