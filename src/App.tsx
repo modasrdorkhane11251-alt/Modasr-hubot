@@ -3,6 +3,7 @@ import { loggerService } from './services/loggerService';
 import React, { useState, useEffect } from 'react';
 import {
   Bot,
+  Trophy,
   MessageSquare,
   LayoutGrid,
   Zap,
@@ -440,61 +441,48 @@ export default function App() {
             </div>
           </div>
 
-          {/* Navigation Tabs */}
-          <div className="flex items-center bg-[#0e1621] p-1 rounded-xl border border-[#242f3d] text-xs">
-            <button
-              onClick={() => setActiveTab('simulator')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
-                activeTab === 'simulator'
-                  ? 'bg-[#0088cc] text-white shadow font-bold'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4" />
-              <span>شبیه‌ساز تلگرام</span>
-            </button>
-
+          {/* Navigation Tabs (Cyberpunk Neon Bar) */}
+          <div className="flex flex-wrap items-center bg-[#09101a] p-1.5 rounded-2xl border border-[#1e2c3e] text-xs gap-1.5">
             <button
               onClick={() => setActiveTab('mafia')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-black transition-all cursor-pointer ${
                 activeTab === 'mafia'
-                  ? 'bg-gradient-to-r from-rose-600 via-purple-600 to-indigo-600 text-white shadow font-bold'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-gradient-to-r from-pink-600 via-rose-600 to-purple-600 text-white shadow-[0_0_20px_rgba(236,72,153,0.5)] border border-pink-400'
+                  : 'text-slate-400 hover:text-white hover:bg-[#152232]'
               }`}
             >
-              <ShieldCheck className="w-4 h-4 text-rose-400" />
-              <span>پلتفرم مافیا آنلاین 🎭</span>
+              <Trophy className="w-4 h-4 text-pink-300" />
+              <span>پلتفرم مافیا آنلاین</span>
             </button>
 
             <button
               onClick={() => setActiveTab('modules')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl font-medium transition-all cursor-pointer ${
                 activeTab === 'modules'
-                  ? 'bg-[#0088cc] text-white shadow font-bold'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-[#152232] text-white border border-[#2e4057] shadow'
+                  : 'text-slate-400 hover:text-white hover:bg-[#152232]'
               }`}
             >
-              <LayoutGrid className="w-4 h-4" />
+              <LayoutGrid className="w-4 h-4 text-sky-400" />
               <span>مرکز مدیریت ماژول‌ها</span>
             </button>
 
             <button
               onClick={() => setActiveTab('connect')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl font-medium transition-all cursor-pointer ${
                 activeTab === 'connect'
-                  ? 'bg-[#0088cc] text-white shadow font-bold'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-[#152232] text-white border border-[#2e4057]'
+                  : 'text-slate-400 hover:text-white hover:bg-[#152232]'
               }`}
             >
               <Zap className="w-4 h-4 text-amber-400" />
               <span>اتصال ربات واقعی</span>
-              {connectedBot && <span className="w-2 h-2 rounded-full bg-emerald-400"></span>}
+              {connectedBot && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>}
             </button>
 
             <button
               onClick={() => setShowN8nModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/30 cursor-pointer"
-              title="تنظیمات و آدرس‌های اتصال به n8n"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl font-bold transition-all bg-[#1a1c1a] text-amber-300 hover:bg-amber-950/40 border border-amber-500/50 shadow-[0_0_10px_rgba(245,158,11,0.2)] cursor-pointer"
             >
               <Webhook className="w-4 h-4 text-amber-400" />
               <span>اتصال به n8n</span>
@@ -502,11 +490,23 @@ export default function App() {
 
             <button
               onClick={() => setShowInstallerModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-medium transition-all bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 border border-cyan-500/30 cursor-pointer"
-              title="نصاب خودکار حرفه‌ای و مدیریت سرور (Auto Installer)"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl font-bold transition-all bg-[#0d1c24] text-cyan-300 hover:bg-cyan-950/40 border border-cyan-400/50 shadow-[0_0_10px_rgba(6,182,212,0.2)] cursor-pointer"
             >
               <Terminal className="w-4 h-4 text-cyan-400" />
               <span>نصب خودکار (Installer)</span>
+              <span className="text-cyan-400 text-[10px]">&gt;</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('simulator')}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl font-medium transition-all cursor-pointer ${
+                activeTab === 'simulator'
+                  ? 'bg-[#0088cc] text-white font-bold shadow'
+                  : 'text-slate-400 hover:text-white hover:bg-[#152232]'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>شبیه‌ساز تلگرام</span>
             </button>
 
             <button
@@ -599,10 +599,23 @@ export default function App() {
         )}
 
         {activeTab === 'modules' && (
-          <ModuleControlCenter
-            onQuickAction={handleQuickAction}
-            walletBalance={walletBalance}
-          />
+          <details open className="bg-[#17212b] border border-[#242f3d] rounded-2xl shadow-2xl max-w-4xl mx-auto overflow-hidden group">
+            <summary className="px-5 py-4 bg-[#1c2836] hover:bg-[#233345] text-white font-bold cursor-pointer select-none flex items-center justify-between border-b border-[#242f3d] transition-colors">
+              <div className="flex items-center gap-2.5">
+                <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span className="text-sm sm:text-base font-bold">کشو مدیریت و کنترل ماژول‌های ربات (Admin Drawer Panel)</span>
+              </div>
+              <span className="text-xs px-2.5 py-1 rounded-lg bg-[#242f3d] text-slate-300 group-open:bg-sky-500/20 group-open:text-sky-300 transition-all">
+                بستن / باز کردن کشو ↕
+              </span>
+            </summary>
+            <div className="p-2 bg-[#0e1621]">
+              <ModuleControlCenter
+                onQuickAction={handleQuickAction}
+                walletBalance={walletBalance}
+              />
+            </div>
+          </details>
         )}
 
         {activeTab === 'connect' && (

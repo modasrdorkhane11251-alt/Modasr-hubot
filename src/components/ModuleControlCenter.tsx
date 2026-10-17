@@ -81,6 +81,7 @@ interface Props {
 }
 
 export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBalance }) => {
+  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<
     | 'universal_dl'
     | 'mafia'
@@ -351,7 +352,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => { setActiveTab(tab.id as any); setIsDrawerOpen(true); }}
                 className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
                   isActive
                     ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-lg font-bold ring-2 ring-sky-300/40'
@@ -386,7 +387,7 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => { setActiveTab(tab.id as any); setIsDrawerOpen(true); }}
                 className={`flex flex-col items-center justify-center py-2 px-1 rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
                   isActive
                     ? 'bg-[#0088cc] text-white shadow-md font-bold'
@@ -400,6 +401,21 @@ export const ModuleControlCenter: React.FC<Props> = ({ onQuickAction, walletBala
           })}
         </div>
       </div>
+
+      <div className="bg-[#17212b] border border-[#242f3d] rounded-xl px-4 py-3 my-3 flex items-center justify-between text-xs text-slate-200 shadow-md">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span className="font-bold text-white">کشو مدیریت ماژول فعال: <span className="text-[#40b3e0] uppercase font-mono">{activeTab}</span></span>
+        </div>
+        <button
+          onClick={() => setIsDrawerOpen(!isDrawerOpen)}
+          className="px-3 py-1.5 bg-[#242f3d] hover:bg-[#2b3e52] text-slate-200 rounded-lg border border-[#2e3d4e] transition-all flex items-center gap-1.5 cursor-pointer font-medium"
+        >
+          <span>{isDrawerOpen ? 'بستن کشو 🔼' : 'باز کردن کشو 🔽'}</span>
+        </button>
+      </div>
+      {isDrawerOpen && (
+      <div className="space-y-4">
 
       {/* ENV MANAGER TAB */}
       {activeTab === 'env_manager' && (

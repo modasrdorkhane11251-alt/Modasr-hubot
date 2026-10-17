@@ -32,7 +32,10 @@ else
 fi
 
 # 3. Test non-interactive CLI flags (--help and --status)
-echo "LANG=en" > .install_lang
+cat << 'EOF' > .install_lang
+LANG=en
+LANG_CHOICE=en
+EOF
 touch .env
 if bash install.sh --help > /dev/null 2>&1; then
   echo "[PASS] install.sh --help executed successfully non-interactively"
@@ -42,7 +45,7 @@ else
 fi
 
 if bash install.sh --status > /dev/null 2>&1; then
-  echo "[PASS] install.sh --status executed successfully with installation present"
+  echo "[PASS] install.sh --status executed successfully with English locale preference"
 else
   echo "[FAIL] install.sh --status failed"
   exit 1
